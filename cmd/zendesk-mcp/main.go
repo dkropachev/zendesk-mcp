@@ -56,7 +56,7 @@ func run(args []string) error {
 func printHelp() {
 	fmt.Fprintln(os.Stdout, `Usage:
   zendesk-mcp                 run MCP server over stdio
-  zendesk-mcp login           import and verify browser Copy as cURL auth
+  zendesk-mcp login           extract and verify token/cookie auth from Copy as cURL
   zendesk-mcp doctor          verify config, auth, role, and capabilities
   zendesk-mcp version         print version`)
 }

@@ -30,33 +30,33 @@ Choose matching archive:
 
 | Platform | Asset |
 | --- | --- |
-| Linux x86-64 | `zendesk-mcp_0.2.0_linux_amd64.tar.gz` |
-| Linux ARM64 | `zendesk-mcp_0.2.0_linux_arm64.tar.gz` |
-| macOS Intel | `zendesk-mcp_0.2.0_darwin_amd64.tar.gz` |
-| macOS Apple Silicon | `zendesk-mcp_0.2.0_darwin_arm64.tar.gz` |
-| Windows x86-64 | `zendesk-mcp_0.2.0_windows_amd64.zip` |
+| Linux x86-64 | `zendesk-mcp_0.3.0_linux_amd64.tar.gz` |
+| Linux ARM64 | `zendesk-mcp_0.3.0_linux_arm64.tar.gz` |
+| macOS Intel | `zendesk-mcp_0.3.0_darwin_amd64.tar.gz` |
+| macOS Apple Silicon | `zendesk-mcp_0.3.0_darwin_arm64.tar.gz` |
+| Windows x86-64 | `zendesk-mcp_0.3.0_windows_amd64.zip` |
 
 Linux x86-64 example using [GitHub CLI](https://cli.github.com/):
 
 ```sh
 release_dir=$(mktemp -d)
-gh release download v0.2.0 \
+gh release download v0.3.0 \
   --repo dkropachev/zendesk-mcp \
   --pattern checksums.txt \
-  --pattern zendesk-mcp_0.2.0_linux_amd64.tar.gz \
+  --pattern zendesk-mcp_0.3.0_linux_amd64.tar.gz \
   --dir "$release_dir"
 
 (cd "$release_dir" && sha256sum --check checksums.txt --ignore-missing)
-gh attestation verify "$release_dir/zendesk-mcp_0.2.0_linux_amd64.tar.gz" \
+gh attestation verify "$release_dir/zendesk-mcp_0.3.0_linux_amd64.tar.gz" \
   --repo dkropachev/zendesk-mcp
-tar -xzf "$release_dir/zendesk-mcp_0.2.0_linux_amd64.tar.gz" -C "$release_dir"
+tar -xzf "$release_dir/zendesk-mcp_0.3.0_linux_amd64.tar.gz" -C "$release_dir"
 install -Dm0755 \
-  "$release_dir/zendesk-mcp_0.2.0_linux_amd64/zendesk-mcp" \
+  "$release_dir/zendesk-mcp_0.3.0_linux_amd64/zendesk-mcp" \
   "$HOME/.local/bin/zendesk-mcp"
 zendesk-mcp version
 ```
 
-Expected version: `0.2.0`.
+Expected version: `0.3.0`.
 
 For macOS, use `shasum -a 256 -c checksums.txt` for checksum verification. For Windows, verify SHA-256 with `Get-FileHash`, extract the `.zip`, and place `zendesk-mcp.exe` on `PATH`.
 
@@ -76,30 +76,43 @@ go build -trimpath -o bin/zendesk-mcp-bin ./cmd/zendesk-mcp
 
 ## Authentication
 
-### Browser/Okta/Cloudflare reads
+### Copy as cURL login
 
-Okta authenticates browser into Zendesk. Authenticated Zendesk and Cloudflare cookies also work for same-origin `/api/v2/...` reads. Import them locally:
+`zendesk-mcp login` extracts authentication directly from an authenticated browser request copied by DevTools. It does not access your browser profile automatically.
 
-1. Open authenticated Zendesk ticket in Chrome.
-2. DevTools → Network → select successful page or `/api/v2` request.
-3. Copy → Copy as cURL.
-4. Run:
+1. Sign in to Zendesk through your normal identity-provider and Cloudflare flow.
+2. Open `https://YOUR_SUBDOMAIN.zendesk.com/agent/home/tickets`.
+3. Open Chrome DevTools (`F12` or `Ctrl+Shift+I`) and select the **Network** tab.
+4. Reload the Zendesk page so DevTools captures authenticated requests.
+5. Select a successful request to your Zendesk tenant. Prefer `/api/v2/users/me.json`; the main tickets-page request also works for cookie authentication.
+6. Right-click the request and select **Copy** → **Copy as cURL**.
+7. Run:
 
 ```sh
 zendesk-mcp login
 ```
 
-5. Paste into local terminal and press `Ctrl-D`.
+8. Paste the copied cURL command into that local terminal and press `Ctrl-D`.
 
-Never paste cURL/cookies into chat, git, `.env`, or shell history. Login validates before atomically replacing mode-`0600` files:
+Never paste copied cURL, tokens, or cookies into chat, git, `.env`, or shell history. Login extracts credentials, verifies them against `/api/v2/users/me.json`, and only then atomically replaces local mode-`0600` files.
+
+Supported extraction, in precedence order when a request contains multiple credential types:
+
+1. `Authorization: Bearer ...` → OAuth token
+2. `Authorization: Basic ...` or `--user email/token:TOKEN` → Zendesk API token
+3. `Cookie: ...` or `--cookie`/`-b` → browser session
+
+Credential storage depends on detected authentication:
 
 ```text
 ~/.config/zendesk-mcp/config.json
-~/.config/zendesk-mcp/cookie
-~/.config/zendesk-mcp/headers.json
+~/.config/zendesk-mcp/oauth-token  # OAuth mode
+~/.config/zendesk-mcp/api-token    # API-token mode
+~/.config/zendesk-mcp/cookie       # browser mode
+~/.config/zendesk-mcp/headers.json # browser mode
 ```
 
-Browser auth intentionally cannot enable writes. Expired session returns `AUTH_EXPIRED`; repeat local login.
+Config stores only credential-file paths, never token/cookie values. Login disables writes after replacing authentication; re-enable writes explicitly only with OAuth or API-token auth. Browser auth cannot enable writes. Expired credentials return `AUTH_EXPIRED`; repeat local login with a fresh copied request.
 
 ### OAuth — preferred
 

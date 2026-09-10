@@ -2,6 +2,18 @@
 
 All notable changes use [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) structure. Releases follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.0] - 2026-09-10
+
+### Added
+
+- `zendesk-mcp login` extracts OAuth bearer tokens and Zendesk Basic API-token credentials from DevTools Copy as cURL input.
+- Automatic credential selection prefers bearer token, then API token, then browser cookies.
+
+### Changed
+
+- Login validates detected authentication before writing local secret files and always disables writes after credential replacement.
+- README documents the complete Zendesk tickets-page DevTools Copy as cURL flow.
+
 ## [0.2.0] - 2026-09-10
 
 ### Added
@@ -15,3 +27,4 @@ All notable changes use [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 - Go 1.25.13 minimum to include required standard-library security fixes.
 
 [0.2.0]: https://github.com/dkropachev/zendesk-mcp/releases/tag/v0.2.0
+[0.3.0]: https://github.com/dkropachev/zendesk-mcp/releases/tag/v0.3.0
