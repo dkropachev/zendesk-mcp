@@ -22,40 +22,57 @@ Features:
 
 Implementation architecture, safety invariants, and completion checklist: [PLAN.md](PLAN.md).
 
-## Build and test
+## Recommended installation: prebuilt release
+
+Install a compiled binary from [GitHub Releases](https://github.com/dkropachev/zendesk-mcp/releases/latest). Release binaries are built and tested by GitHub Actions, include version metadata, publish SHA-256 checksums, and carry GitHub build-provenance attestations. Building from source is intended for contributors only.
+
+Choose matching archive:
+
+| Platform | Asset |
+| --- | --- |
+| Linux x86-64 | `zendesk-mcp_0.2.0_linux_amd64.tar.gz` |
+| Linux ARM64 | `zendesk-mcp_0.2.0_linux_arm64.tar.gz` |
+| macOS Intel | `zendesk-mcp_0.2.0_darwin_amd64.tar.gz` |
+| macOS Apple Silicon | `zendesk-mcp_0.2.0_darwin_arm64.tar.gz` |
+| Windows x86-64 | `zendesk-mcp_0.2.0_windows_amd64.zip` |
+
+Linux x86-64 example using [GitHub CLI](https://cli.github.com/):
+
+```sh
+release_dir=$(mktemp -d)
+gh release download v0.2.0 \
+  --repo dkropachev/zendesk-mcp \
+  --pattern checksums.txt \
+  --pattern zendesk-mcp_0.2.0_linux_amd64.tar.gz \
+  --dir "$release_dir"
+
+(cd "$release_dir" && sha256sum --check checksums.txt --ignore-missing)
+gh attestation verify "$release_dir/zendesk-mcp_0.2.0_linux_amd64.tar.gz" \
+  --repo dkropachev/zendesk-mcp
+tar -xzf "$release_dir/zendesk-mcp_0.2.0_linux_amd64.tar.gz" -C "$release_dir"
+install -Dm0755 \
+  "$release_dir/zendesk-mcp_0.2.0_linux_amd64/zendesk-mcp" \
+  "$HOME/.local/bin/zendesk-mcp"
+zendesk-mcp version
+```
+
+Expected version: `0.2.0`.
+
+For macOS, use `shasum -a 256 -c checksums.txt` for checksum verification. For Windows, verify SHA-256 with `Get-FileHash`, extract the `.zip`, and place `zendesk-mcp.exe` on `PATH`.
+
+## Build from source for development
 
 Go 1.25.13+ required. This minimum includes standard-library security fixes needed by network, TLS, URL, and filesystem code paths used here.
 
 ```sh
+git clone https://github.com/dkropachev/zendesk-mcp.git
+cd zendesk-mcp
 go test -race ./...
 go vet ./...
 go build -trimpath -o bin/zendesk-mcp-bin ./cmd/zendesk-mcp
 ```
 
-`bin/zendesk-mcp` rebuilds binary when Go source changes.
-
-## Install a release
-
-Download archive for your platform from [GitHub Releases](https://github.com/dkropachev/zendesk-mcp/releases), verify it against `checksums.txt`, and place binary on `PATH`:
-
-```sh
-sha256sum --check checksums.txt --ignore-missing
-install -m 0755 zendesk-mcp "$HOME/.local/bin/zendesk-mcp"
-zendesk-mcp version
-```
-
-Release assets cover Linux amd64/arm64, macOS amd64/arm64, and Windows amd64. Verify build provenance with GitHub CLI:
-
-```sh
-gh attestation verify ./zendesk-mcp_0.2.0_linux_amd64.tar.gz \
-  --repo dkropachev/zendesk-mcp
-```
-
-Source installation:
-
-```sh
-go install github.com/dkropachev/zendesk-mcp/cmd/zendesk-mcp@latest
-```
+`bin/zendesk-mcp` is a development launcher that rebuilds `bin/zendesk-mcp-bin` when Go source changes. Production users should install a prebuilt release instead.
 
 ## Authentication
 
@@ -69,7 +86,7 @@ Okta authenticates browser into Zendesk. Authenticated Zendesk and Cloudflare co
 4. Run:
 
 ```sh
-/path/to/zendesk-mcp/bin/zendesk-mcp login
+zendesk-mcp login
 ```
 
 5. Paste into local terminal and press `Ctrl-D`.
@@ -128,7 +145,7 @@ Restart Codex after first registration so tools load. No daemon or `codex mcp lo
 Check effective setup without exposing secrets:
 
 ```sh
-/path/to/zendesk-mcp/bin/zendesk-mcp doctor
+zendesk-mcp doctor
 ```
 
 Doctor reports tenant, identity/role, auth mode, config version, download availability, and write status as JSON.
