@@ -30,7 +30,7 @@ func TestReadRetries429ButWriteDoesNot(t *testing.T) {
 		_, _ = w.Write([]byte(`{"error":"rate_limited"}`))
 	}))
 	defer server.Close()
-	client, err := New(Config{BaseURL: server.URL, AuthMode: "oauth", OAuthToken: "secret", EnableWrite: true, TLSSkipVerify: true, MaxReadRetries: 1})
+	client, err := New(Config{BaseURL: server.URL, AuthMode: "oauth", OAuthToken: "secret", EnableWrite: true, TLSSkipVerify: true, AllowNonZendeskHostForTesting: true, MaxReadRetries: 1})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -76,7 +76,7 @@ func TestHTTPErrorClassesAreTypedAndSanitized(t *testing.T) {
 				_, _ = w.Write([]byte(`{"error":"expected_test_error"}`))
 			}))
 			defer server.Close()
-			client, _ := New(Config{BaseURL: server.URL, AuthMode: "oauth", OAuthToken: "x", TLSSkipVerify: true})
+			client, _ := New(Config{BaseURL: server.URL, AuthMode: "oauth", OAuthToken: "x", TLSSkipVerify: true, AllowNonZendeskHostForTesting: true})
 			_, err := client.Get(context.Background(), "/api/v2/users/me.json", nil, 1024)
 			var apiErr *APIError
 			if !errors.As(err, &apiErr) || apiErr.StatusCode != status {
@@ -92,7 +92,7 @@ func TestHTTPErrorClassesAreTypedAndSanitized(t *testing.T) {
 func TestNoContentSuccess(t *testing.T) {
 	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusNoContent) }))
 	defer server.Close()
-	client, _ := New(Config{BaseURL: server.URL, AuthMode: "oauth", OAuthToken: "x", EnableWrite: true, TLSSkipVerify: true})
+	client, _ := New(Config{BaseURL: server.URL, AuthMode: "oauth", OAuthToken: "x", EnableWrite: true, TLSSkipVerify: true, AllowNonZendeskHostForTesting: true})
 	if _, err := client.DoJSON(context.Background(), http.MethodDelete, "/api/v2/uploads/token.json", nil, nil, 1024); err != nil {
 		t.Fatal(err)
 	}

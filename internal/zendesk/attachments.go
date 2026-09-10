@@ -203,7 +203,10 @@ func validateStorageURL(parsed *url.URL) error {
 	if parsed == nil || parsed.Scheme != "https" || parsed.User != nil || parsed.Fragment != "" {
 		return errors.New("attachment redirect must be credential-free HTTPS URL")
 	}
-	host := strings.ToLower(parsed.Hostname())
+	host, err := canonicalDNSHostname(parsed.Hostname())
+	if err != nil {
+		return errors.New("attachment redirect host is not approved Zendesk storage")
+	}
 	if !strings.HasSuffix(host, ".zdusercontent.com") || host == ".zdusercontent.com" {
 		return errors.New("attachment redirect host is not approved Zendesk storage")
 	}

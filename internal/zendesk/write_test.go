@@ -28,7 +28,7 @@ func TestUploadFileConfinedAndTyped(t *testing.T) {
 		fmt.Fprint(w, `{"upload":{"token":"opaque","attachment":{"id":9,"file_name":"evidence.txt"}}}`)
 	}))
 	defer server.Close()
-	client, err := New(Config{BaseURL: server.URL, AuthMode: "oauth", OAuthToken: "x", EnableWrite: true, UploadRoot: root, TLSSkipVerify: true})
+	client, err := New(Config{BaseURL: server.URL, AuthMode: "oauth", OAuthToken: "x", EnableWrite: true, UploadRoot: root, TLSSkipVerify: true, AllowNonZendeskHostForTesting: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -61,7 +61,7 @@ func TestTypedCreateTicketBody(t *testing.T) {
 		fmt.Fprint(w, `{"ticket":{"id":1}}`)
 	}))
 	defer server.Close()
-	client, _ := New(Config{BaseURL: server.URL, AuthMode: "oauth", OAuthToken: "x", EnableWrite: true, TLSSkipVerify: true})
+	client, _ := New(Config{BaseURL: server.URL, AuthMode: "oauth", OAuthToken: "x", EnableWrite: true, TLSSkipVerify: true, AllowNonZendeskHostForTesting: true})
 	_, err := client.CreateTicket(context.Background(), TicketCreate{Subject: "s", Comment: CommentWrite{Body: "b", Public: true}})
 	if err != nil {
 		t.Fatal(err)

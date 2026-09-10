@@ -28,25 +28,28 @@ func TestPreparedStoreDigestExpiryIdentityAndSingleUse(t *testing.T) {
 	if len(op.Digest) != 64 || len(op.ID) != 32 {
 		t.Fatalf("op=%+v", op)
 	}
-	if _, err := store.Checkout(op.ID, "wrong", op.Tenant, op.UserID); err == nil {
+	if _, err := store.Checkout(op.ID, "wrong", op.Tenant, op.UserID, "x"); err == nil {
 		t.Fatal("wrong digest accepted")
 	}
-	if _, err := store.Checkout(op.ID, op.Digest, "https://b.zendesk.com", op.UserID); err == nil {
+	if _, err := store.Checkout(op.ID, op.Digest, "https://b.zendesk.com", op.UserID, "x"); err == nil {
 		t.Fatal("wrong tenant accepted")
 	}
-	if _, err := store.Checkout(op.ID, op.Digest, op.Tenant, 3); err == nil {
+	if _, err := store.Checkout(op.ID, op.Digest, op.Tenant, 3, "x"); err == nil {
 		t.Fatal("wrong user accepted")
 	}
-	if _, err := store.Checkout(op.ID, op.Digest, op.Tenant, op.UserID); err != nil {
+	if _, err := store.Checkout(op.ID, op.Digest, op.Tenant, op.UserID, "wrong-kind"); err == nil {
+		t.Fatal("wrong operation kind accepted")
+	}
+	if _, err := store.Checkout(op.ID, op.Digest, op.Tenant, op.UserID, "x"); err != nil {
 		t.Fatal(err)
 	}
 	store.Complete(op.ID)
-	if _, err := store.Checkout(op.ID, op.Digest, op.Tenant, op.UserID); err == nil {
+	if _, err := store.Checkout(op.ID, op.Digest, op.Tenant, op.UserID, "x"); err == nil {
 		t.Fatal("used op accepted")
 	}
 	op, _ = store.Prepare(operationPayload{Kind: "x"}, "t", 1)
 	now = now.Add(11 * time.Minute)
-	if _, err := store.Checkout(op.ID, op.Digest, "t", 1); err == nil {
+	if _, err := store.Checkout(op.ID, op.Digest, "t", 1, "x"); err == nil {
 		t.Fatal("expired op accepted")
 	}
 }
@@ -86,7 +89,7 @@ func TestInternalAndPublicCommentPrepareCommit(t *testing.T) {
 		}
 	}))
 	defer httpServer.Close()
-	client, err := zendesk.New(zendesk.Config{BaseURL: httpServer.URL, AuthMode: "oauth", OAuthToken: "x", EnableWrite: true, TLSSkipVerify: true})
+	client, err := zendesk.New(zendesk.Config{BaseURL: httpServer.URL, AuthMode: "oauth", OAuthToken: "x", EnableWrite: true, TLSSkipVerify: true, AllowNonZendeskHostForTesting: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -123,7 +126,7 @@ func TestCreateRequiresExplicitVisibilityAndConfirmation(t *testing.T) {
 		}
 	}))
 	defer httpServer.Close()
-	client, _ := zendesk.New(zendesk.Config{BaseURL: httpServer.URL, AuthMode: "oauth", OAuthToken: "x", EnableWrite: true, TLSSkipVerify: true})
+	client, _ := zendesk.New(zendesk.Config{BaseURL: httpServer.URL, AuthMode: "oauth", OAuthToken: "x", EnableWrite: true, TLSSkipVerify: true, AllowNonZendeskHostForTesting: true})
 	server := NewServer(client, "test")
 	callTool(t, server, "zendesk_prepare_ticket_create", map[string]any{"subject": "x", "body": "y"}, true)
 	prepared := callTool(t, server, "zendesk_prepare_ticket_create", map[string]any{"subject": "x", "body": "y", "public": true}, false)
@@ -156,12 +159,70 @@ func TestWriteCollisionNeverRetries(t *testing.T) {
 		}
 	}))
 	defer httpServer.Close()
-	client, _ := zendesk.New(zendesk.Config{BaseURL: httpServer.URL, AuthMode: "oauth", OAuthToken: "x", EnableWrite: true, TLSSkipVerify: true, MaxReadRetries: 3})
+	client, _ := zendesk.New(zendesk.Config{BaseURL: httpServer.URL, AuthMode: "oauth", OAuthToken: "x", EnableWrite: true, TLSSkipVerify: true, AllowNonZendeskHostForTesting: true, MaxReadRetries: 3})
 	server := NewServer(client, "test")
 	prepared := callTool(t, server, "zendesk_update_ticket", map[string]any{"ticket_id": 7, "status": "pending"}, false)
 	callTool(t, server, "zendesk_update_ticket", map[string]any{"operation_id": prepared["operation_id"], "digest": prepared["digest"], "confirm": true}, true)
+	callTool(t, server, "zendesk_update_ticket", map[string]any{"operation_id": prepared["operation_id"], "digest": prepared["digest"], "confirm": true}, true)
 	if puts.Load() != 1 {
 		t.Fatalf("collision write retried %d times", puts.Load())
+	}
+}
+
+func TestBodylessSuccessfulWriteReportsConsumedAttempt(t *testing.T) {
+	var posts atomic.Int32
+	httpServer := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case req.URL.Path == "/api/v2/users/me.json":
+			fmt.Fprint(w, `{"user":{"id":2,"role":"agent"}}`)
+		case req.Method == http.MethodPost && req.URL.Path == "/api/v2/tickets.json":
+			posts.Add(1)
+			w.WriteHeader(http.StatusNoContent)
+		default:
+			http.NotFound(w, req)
+		}
+	}))
+	defer httpServer.Close()
+	client, err := zendesk.New(zendesk.Config{BaseURL: httpServer.URL, AuthMode: "oauth", OAuthToken: "x", EnableWrite: true, TLSSkipVerify: true, AllowNonZendeskHostForTesting: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := NewServer(client, "test")
+	prepared := callTool(t, server, "zendesk_prepare_ticket_create", map[string]any{"subject": "x", "body": "y", "public": true}, false)
+	commitArgs := map[string]any{"operation_id": prepared["operation_id"], "digest": prepared["digest"], "confirm": true}
+	request := map[string]any{"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": map[string]any{"name": "zendesk_create_ticket", "arguments": commitArgs}}
+	raw, err := json.Marshal(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response, ok := server.HandleJSON(context.Background(), raw)
+	if !ok || !strings.Contains(string(response), `"isError":true`) || !strings.Contains(string(response), "WRITE_ATTEMPT_CONSUMED") {
+		t.Fatalf("response=%s, ok=%v", response, ok)
+	}
+	response, ok = server.HandleJSON(context.Background(), raw)
+	if !ok || !strings.Contains(string(response), `"isError":true`) || !strings.Contains(string(response), "WRITE_ATTEMPT_CONSUMED") {
+		t.Fatalf("replay response=%s, ok=%v", response, ok)
+	}
+	if posts.Load() != 1 {
+		t.Fatalf("bodyless success was attempted %d times", posts.Load())
+	}
+}
+
+func TestCommentBodyLimitUsesUTF8Bytes(t *testing.T) {
+	if err := validateBody(strings.Repeat("a", maxCommentBodyBytes)); err != nil {
+		t.Fatal(err)
+	}
+	if err := validateBody(strings.Repeat("a", maxCommentBodyBytes+1)); err == nil {
+		t.Fatal("oversize ASCII body accepted")
+	}
+	if err := validateBody(strings.Repeat("é", maxCommentBodyBytes/2+1)); err == nil {
+		t.Fatal("oversize multibyte body accepted")
+	}
+	visibility := false
+	_, err := validatedTicketCreate(ticketCreateArgs{Subject: "subject", Body: strings.Repeat("a", maxCommentBodyBytes+1), Public: &visibility}, 0)
+	if err == nil {
+		t.Fatal("oversize initial comment accepted")
 	}
 }
 
@@ -171,7 +232,7 @@ func TestRequestsToolRejectsPrivateComment(t *testing.T) {
 		fmt.Fprint(w, `{"comments":[{"id":1,"public":false}],"meta":{"has_more":false}}`)
 	}))
 	defer httpServer.Close()
-	client, _ := zendesk.New(zendesk.Config{BaseURL: httpServer.URL, AuthMode: "oauth", OAuthToken: "x", TLSSkipVerify: true})
+	client, _ := zendesk.New(zendesk.Config{BaseURL: httpServer.URL, AuthMode: "oauth", OAuthToken: "x", TLSSkipVerify: true, AllowNonZendeskHostForTesting: true})
 	server := NewServer(client, "test")
 	callTool(t, server, "zendesk_list_request_comments", map[string]any{"request_id": 7}, true)
 }
@@ -182,7 +243,7 @@ func TestEndUserCannotPrepareAgentWrite(t *testing.T) {
 		fmt.Fprint(w, `{"user":{"id":8,"role":"end-user"}}`)
 	}))
 	defer httpServer.Close()
-	client, _ := zendesk.New(zendesk.Config{BaseURL: httpServer.URL, AuthMode: "oauth", OAuthToken: "x", EnableWrite: true, TLSSkipVerify: true})
+	client, _ := zendesk.New(zendesk.Config{BaseURL: httpServer.URL, AuthMode: "oauth", OAuthToken: "x", EnableWrite: true, TLSSkipVerify: true, AllowNonZendeskHostForTesting: true})
 	server := NewServer(client, "test")
 	callTool(t, server, "zendesk_prepare_ticket_create", map[string]any{"subject": "x", "body": "y", "public": true}, true)
 }
@@ -198,7 +259,7 @@ func TestInvalidRawWriteValuesRejected(t *testing.T) {
 		}
 	}))
 	defer httpServer.Close()
-	client, _ := zendesk.New(zendesk.Config{BaseURL: httpServer.URL, AuthMode: "oauth", OAuthToken: "x", EnableWrite: true, TLSSkipVerify: true})
+	client, _ := zendesk.New(zendesk.Config{BaseURL: httpServer.URL, AuthMode: "oauth", OAuthToken: "x", EnableWrite: true, TLSSkipVerify: true, AllowNonZendeskHostForTesting: true})
 	server := NewServer(client, "test")
 	callTool(t, server, "zendesk_prepare_ticket_create", map[string]any{"subject": "x", "body": "y", "public": true, "priority": "super-urgent"}, true)
 	callTool(t, server, "zendesk_update_ticket", map[string]any{"ticket_id": 7, "status": "closed"}, true)
@@ -235,12 +296,144 @@ func TestFailedAttachmentUploadCleansTokens(t *testing.T) {
 		}
 	}))
 	defer httpServer.Close()
-	client, _ := zendesk.New(zendesk.Config{BaseURL: httpServer.URL, AuthMode: "oauth", OAuthToken: "x", EnableWrite: true, UploadRoot: root, TLSSkipVerify: true})
+	client, _ := zendesk.New(zendesk.Config{BaseURL: httpServer.URL, AuthMode: "oauth", OAuthToken: "x", EnableWrite: true, UploadRoot: root, TLSSkipVerify: true, AllowNonZendeskHostForTesting: true})
 	server := NewServer(client, "test")
 	prepared := callTool(t, server, "zendesk_add_comment_with_attachments", map[string]any{"ticket_id": 7, "body": "evidence", "visibility": "private", "files": []string{"one.txt", "two.txt"}}, false)
 	callTool(t, server, "zendesk_add_comment_with_attachments", map[string]any{"operation_id": prepared["operation_id"], "digest": prepared["digest"], "confirm": true}, true)
 	if uploads.Load() != 2 || deletes.Load() != 1 {
 		t.Fatalf("uploads=%d deletes=%d", uploads.Load(), deletes.Load())
+	}
+}
+
+func TestUploadCleanupSurvivesCanceledRequest(t *testing.T) {
+	var deletes atomic.Int32
+	serverHTTP := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodDelete {
+			t.Errorf("method=%s", r.Method)
+		}
+		deletes.Add(1)
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer serverHTTP.Close()
+	client, _ := zendesk.New(zendesk.Config{BaseURL: serverHTTP.URL, AuthMode: "oauth", OAuthToken: "fake", EnableWrite: true, TLSSkipVerify: true, AllowNonZendeskHostForTesting: true})
+	registry := &Registry{client: client, writes: NewPreparedStore()}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	registry.cleanupUploads(ctx, []string{"opaque-one", "opaque-two"})
+	if deletes.Load() != 2 {
+		t.Fatalf("deletes=%d", deletes.Load())
+	}
+}
+
+func TestAmbiguousAttachmentUpdateDoesNotDeleteUploads(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "evidence.txt"), []byte("evidence"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	putStarted := make(chan struct{})
+	releasePut := make(chan struct{})
+	var deletes atomic.Int32
+	serverHTTP := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case req.Method == http.MethodPost && req.URL.Path == "/api/v2/uploads.json":
+			fmt.Fprint(w, `{"upload":{"token":"opaque-token","attachment":{"id":1}}}`)
+		case req.Method == http.MethodPut && req.URL.Path == "/api/v2/tickets/7.json":
+			close(putStarted)
+			<-releasePut
+			fmt.Fprint(w, `{"ticket":{"id":7},"audit":{"id":8}}`)
+		case req.Method == http.MethodDelete:
+			deletes.Add(1)
+			w.WriteHeader(http.StatusNoContent)
+		default:
+			http.NotFound(w, req)
+		}
+	}))
+	defer serverHTTP.Close()
+	defer close(releasePut)
+	client, err := zendesk.New(zendesk.Config{BaseURL: serverHTTP.URL, AuthMode: "oauth", OAuthToken: "fake", EnableWrite: true, UploadRoot: root, TLSSkipVerify: true, AllowNonZendeskHostForTesting: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	registry := &Registry{client: client, writes: NewPreparedStore()}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		_, executeErr := registry.execute(ctx, operationPayload{
+			Kind:     "comment_attachments",
+			TicketID: 7,
+			TicketUpdate: &zendesk.TicketUpdate{
+				Comment: &zendesk.CommentWrite{Body: "see attachment", Public: false},
+			},
+			Files: []string{"evidence.txt"},
+		})
+		done <- executeErr
+	}()
+	<-putStarted
+	cancel()
+	if err := <-done; err == nil {
+		t.Fatal("canceled update unexpectedly succeeded")
+	}
+	if deletes.Load() != 0 {
+		t.Fatalf("ambiguous update deleted %d upload token(s)", deletes.Load())
+	}
+}
+
+func TestAttachmentUpdateCleanupRequiresDefinitiveRejection(t *testing.T) {
+	for _, test := range []struct {
+		name             string
+		status           int
+		responseBody     string
+		maxResponseBytes int64
+		wantDeletes      int32
+	}{
+		{name: "validation rejection", status: http.StatusUnprocessableEntity, responseBody: `{"error":"update failed"}`, wantDeletes: 1},
+		{name: "oversize validation rejection", status: http.StatusUnprocessableEntity, responseBody: strings.Repeat("x", 256), maxResponseBytes: 128, wantDeletes: 1},
+		{name: "ambiguous success redirect", status: http.StatusSeeOther, responseBody: `{"redirect":"ticket"}`, wantDeletes: 0},
+		{name: "ambiguous server failure", status: http.StatusInternalServerError, responseBody: `{"error":"update failed"}`, wantDeletes: 0},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			root := t.TempDir()
+			if err := os.WriteFile(filepath.Join(root, "evidence.txt"), []byte("evidence"), 0600); err != nil {
+				t.Fatal(err)
+			}
+			var deletes atomic.Int32
+			serverHTTP := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				switch {
+				case req.Method == http.MethodPost && req.URL.Path == "/api/v2/uploads.json":
+					fmt.Fprint(w, `{"upload":{"token":"opaque-token","attachment":{"id":1}}}`)
+				case req.Method == http.MethodPut && req.URL.Path == "/api/v2/tickets/7.json":
+					w.WriteHeader(test.status)
+					fmt.Fprint(w, test.responseBody)
+				case req.Method == http.MethodDelete:
+					deletes.Add(1)
+					w.WriteHeader(http.StatusNoContent)
+				default:
+					http.NotFound(w, req)
+				}
+			}))
+			defer serverHTTP.Close()
+			client, err := zendesk.New(zendesk.Config{BaseURL: serverHTTP.URL, AuthMode: "oauth", OAuthToken: "fake", EnableWrite: true, UploadRoot: root, MaxResponseBytes: test.maxResponseBytes, TLSSkipVerify: true, AllowNonZendeskHostForTesting: true})
+			if err != nil {
+				t.Fatal(err)
+			}
+			registry := &Registry{client: client, writes: NewPreparedStore()}
+			_, err = registry.execute(context.Background(), operationPayload{
+				Kind:     "comment_attachments",
+				TicketID: 7,
+				TicketUpdate: &zendesk.TicketUpdate{
+					Comment: &zendesk.CommentWrite{Body: "see attachment", Public: false},
+				},
+				Files: []string{"evidence.txt"},
+			})
+			if err == nil {
+				t.Fatal("failed update unexpectedly succeeded")
+			}
+			if deletes.Load() != test.wantDeletes {
+				t.Fatalf("deleted %d upload token(s), want %d", deletes.Load(), test.wantDeletes)
+			}
+		})
 	}
 }
 
@@ -261,7 +454,7 @@ func TestRequestAPIFailureStatesRemainErrors(t *testing.T) {
 				fmt.Fprint(w, test.body)
 			}))
 			defer serverHTTP.Close()
-			client, _ := zendesk.New(zendesk.Config{BaseURL: serverHTTP.URL, AuthMode: "oauth", OAuthToken: "x", TLSSkipVerify: true})
+			client, _ := zendesk.New(zendesk.Config{BaseURL: serverHTTP.URL, AuthMode: "oauth", OAuthToken: "x", TLSSkipVerify: true, AllowNonZendeskHostForTesting: true})
 			callTool(t, NewServer(client, "test"), "zendesk_get_request", map[string]any{"request_id": 7}, true)
 		})
 	}
@@ -303,7 +496,7 @@ func TestFollowupAndRequestCommitPaths(t *testing.T) {
 		}
 	}))
 	defer httpServer.Close()
-	client, _ := zendesk.New(zendesk.Config{BaseURL: httpServer.URL, AuthMode: "oauth", OAuthToken: "x", EnableWrite: true, TLSSkipVerify: true})
+	client, _ := zendesk.New(zendesk.Config{BaseURL: httpServer.URL, AuthMode: "oauth", OAuthToken: "x", EnableWrite: true, TLSSkipVerify: true, AllowNonZendeskHostForTesting: true})
 	server := NewServer(client, "test")
 	follow := callTool(t, server, "zendesk_prepare_followup_ticket", map[string]any{"source_ticket_id": 7, "body": "continued", "public": false}, false)
 	callTool(t, server, "zendesk_create_followup_ticket", map[string]any{"operation_id": follow["operation_id"], "digest": follow["digest"], "confirm": true}, false)
@@ -339,7 +532,7 @@ func TestAttachmentCommentSuccessConsumesOpaqueUploadToken(t *testing.T) {
 		}
 	}))
 	defer httpServer.Close()
-	client, _ := zendesk.New(zendesk.Config{BaseURL: httpServer.URL, AuthMode: "oauth", OAuthToken: "x", EnableWrite: true, UploadRoot: root, TLSSkipVerify: true})
+	client, _ := zendesk.New(zendesk.Config{BaseURL: httpServer.URL, AuthMode: "oauth", OAuthToken: "x", EnableWrite: true, UploadRoot: root, TLSSkipVerify: true, AllowNonZendeskHostForTesting: true})
 	server := NewServer(client, "test")
 	prepared := callTool(t, server, "zendesk_add_comment_with_attachments", map[string]any{"ticket_id": 7, "body": "see file", "visibility": "private", "files": []string{"evidence.txt"}}, false)
 	committed := callTool(t, server, "zendesk_add_comment_with_attachments", map[string]any{"operation_id": prepared["operation_id"], "digest": prepared["digest"], "confirm": true}, false)
@@ -367,6 +560,7 @@ func callTool(t *testing.T, server *mcp.Server, name string, args map[string]any
 			Content []struct {
 				Text string `json:"text"`
 			} `json:"content"`
+			IsError bool `json:"isError"`
 		} `json:"result"`
 		Error *struct {
 			Message string `json:"message"`
@@ -376,13 +570,16 @@ func callTool(t *testing.T, server *mcp.Server, name string, args map[string]any
 		t.Fatal(err)
 	}
 	if wantError {
-		if envelope.Error == nil {
+		if envelope.Error == nil && !envelope.Result.IsError {
 			t.Fatalf("%s expected error: %s", name, response)
 		}
 		return nil
 	}
 	if envelope.Error != nil {
 		t.Fatalf("%s error=%s", name, envelope.Error.Message)
+	}
+	if envelope.Result.IsError {
+		t.Fatalf("%s tool error: %s", name, response)
 	}
 	if len(envelope.Result.Content) == 0 {
 		return nil

@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -27,6 +28,16 @@ func (r *failingReader) Read(p []byte) (int, error) {
 type roundTripFunc func(*http.Request) (*http.Response, error)
 
 func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) { return f(req) }
+
+func TestValidateStorageURLRejectsIPLiteralWithMisleadingZone(t *testing.T) {
+	storageURL, err := url.Parse("https://[::ffff:127.0.0.1%25x.zdusercontent.com]/signed/redacted")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := validateStorageURL(storageURL); err == nil {
+		t.Fatal("IP literal with misleading zone passed the storage-host allowlist")
+	}
+}
 
 func TestGetAndDownloadAttachmentStripsCredentials(t *testing.T) {
 	root := t.TempDir()
@@ -53,7 +64,7 @@ func TestGetAndDownloadAttachmentStripsCredentials(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client, err := New(Config{BaseURL: server.URL, AuthMode: "browser", Cookie: "session=secret", DownloadRoot: root, TLSSkipVerify: true})
+	client, err := New(Config{BaseURL: server.URL, AuthMode: "browser", Cookie: "session=secret", DownloadRoot: root, TLSSkipVerify: true, AllowNonZendeskHostForTesting: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -118,7 +129,7 @@ func TestDownloadRejectsHostOversizeMalwareAndOverwrite(t *testing.T) {
 		}
 	}))
 	defer server.Close()
-	client, err := New(Config{BaseURL: server.URL, AuthMode: "oauth", OAuthToken: "secret", DownloadRoot: root, TLSSkipVerify: true, MaxDownloadBytes: 10})
+	client, err := New(Config{BaseURL: server.URL, AuthMode: "oauth", OAuthToken: "secret", DownloadRoot: root, TLSSkipVerify: true, AllowNonZendeskHostForTesting: true, MaxDownloadBytes: 10})
 	if err != nil {
 		t.Fatal(err)
 	}

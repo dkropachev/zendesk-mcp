@@ -114,6 +114,8 @@ Credential storage depends on detected authentication:
 
 Config stores only credential-file paths, never token/cookie values. Login disables writes after replacing authentication; re-enable writes explicitly only with OAuth or API-token auth. Browser auth cannot enable writes. Expired credentials return `AUTH_EXPIRED`; repeat local login with a fresh copied request.
 
+Stored credentials are bound to the configured Zendesk tenant hostname. API hosts outside `*.zendesk.com` and environment overrides that change the credential's tenant are rejected.
+
 ### OAuth — preferred
 
 OAuth is recommended for durable reads and required for preferred write setup. Ticket audits currently require global `read`; `tickets:read` alone is insufficient.
@@ -229,10 +231,11 @@ Writes are absent from tool list by default. Requirements:
 - OAuth or API-token auth; browser-cookie writes rejected;
 - explicit `ZENDESK_ENABLE_WRITE=true` or config `"enable_write": true`;
 - two-step prepare/commit;
-- prepared operation bound to tenant and user, expires after 10 minutes, single-use after success;
+- prepared operation bound to tenant and user, expires after 10 minutes, and is consumed before its first confirmed write attempt;
 - commit requires exact digest and `confirm=true`;
 - updates use `safe_update=true` plus captured `updated_stamp` and never auto-retry conflicts;
 - public reply and internal note are separate tools;
+- comment bodies are rejected above Zendesk's 64 KiB UTF-8 limit;
 - write logs contain kind, IDs, digest, user, status—never bodies or secrets.
 
 Agent tools:
@@ -253,11 +256,11 @@ End-user tools:
 | `zendesk_prepare_request` → `zendesk_create_request` | Public request creation |
 | `zendesk_add_request_comment` | Prepare then commit public comment |
 
-Creating/updating tickets can run triggers, notify users, change SLAs, and create permanent audit history. Review returned `effects` before commit. Conflicts require fresh preparation. No bulk writes, delete, redaction, merge, or irreversible admin tools exist.
+Creating/updating tickets can run triggers, notify users, change SLAs, and create permanent audit history. Review returned `effects` before commit. Any commit reported as `WRITE_ATTEMPT_CONSUMED`, including conflicts and ambiguous failures, requires fresh preparation before another write. No bulk writes, delete, redaction, merge, or irreversible admin tools exist.
 
 Writes create permanent audit records and may send notifications; this MCP provides no rollback operation. Correct mistakes through normal Zendesk workflow. OAuth access/refresh failures require reauthorization or token-file refresh; browser sessions require local `login` again.
 
-Attachment upload requires separate `upload_root`. File arguments are relative, regular, confined files. Zendesk upload tokens are never returned to model output. Failed comment flow attempts unused-token cleanup.
+Attachment upload requires separate `upload_root`. File arguments are relative, regular, confined files. Zendesk upload tokens are never returned to model output. Definitively rejected comment flows attempt unused-token cleanup; ambiguous ticket updates leave tokens untouched pending reconciliation.
 
 ## Testing
 
@@ -292,7 +295,7 @@ Created sandbox ticket receives `mcp-integration-test` tag. Test reports ticket 
 
 ## Configuration
 
-See [.env.example](.env.example). Secret file values are loaded per request, allowing refresh without MCP restart. Config files without `version` migrate as version 1; unknown future versions fail closed.
+See [.env.example](.env.example). Secret file values are loaded per request, allowing refresh without MCP restart. File-backed credentials require a config file so their tenant binding persists; environment-only credential-file setups are rejected. Config files without `version` migrate as version 1; unknown future versions fail closed.
 
 Important environment variables:
 

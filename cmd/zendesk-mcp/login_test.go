@@ -150,6 +150,9 @@ func TestWriteLoginFilesPreservesSafeSettingsAndDisablesWrite(t *testing.T) {
 	if config["download_root"] != "/safe/downloads" || config["max_read_retries"] != float64(2) || config["auth_mode"] != "browser" || config["enable_write"] != false {
 		t.Fatalf("config=%#v", config)
 	}
+	if config["credential_host"] != "example.zendesk.com" {
+		t.Fatalf("credential_host=%v", config["credential_host"])
+	}
 	if _, ok := config["oauth_token"]; ok {
 		t.Fatal("OAuth token retained during browser login")
 	}

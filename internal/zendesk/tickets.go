@@ -120,19 +120,25 @@ func (c *Client) Users(ctx context.Context, ids []int64) ([]User, error) {
 	if len(values) == 0 {
 		return nil, nil
 	}
-	resp, err := c.Get(ctx, "/api/v2/users/show_many.json", url.Values{"ids": {strings.Join(values, ",")}}, c.cfg.MaxResponseBytes)
-	if err != nil {
-		return nil, err
-	}
-	var result struct {
-		Users []User `json:"users"`
-	}
-	if err := json.Unmarshal(resp.Body, &result); err != nil {
-		return nil, err
-	}
 	byID := map[int64]User{}
-	for _, user := range result.Users {
-		byID[user.ID] = user
+	for start := 0; start < len(values); start += 100 {
+		end := start + 100
+		if end > len(values) {
+			end = len(values)
+		}
+		resp, err := c.Get(ctx, "/api/v2/users/show_many.json", url.Values{"ids": {strings.Join(values[start:end], ",")}}, c.cfg.MaxResponseBytes)
+		if err != nil {
+			return nil, err
+		}
+		var result struct {
+			Users []User `json:"users"`
+		}
+		if err := json.Unmarshal(resp.Body, &result); err != nil {
+			return nil, err
+		}
+		for _, user := range result.Users {
+			byID[user.ID] = user
+		}
 	}
 	ordered := make([]User, 0, len(values))
 	for _, raw := range values {

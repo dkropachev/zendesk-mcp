@@ -15,7 +15,7 @@ func TestFullServerInitializationIncludesTenantLoginHelp(t *testing.T) {
 		t.Fatal(err)
 	}
 	server := NewServer(client, "test")
-	response, ok := server.HandleJSON(context.Background(), []byte(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18"}}`))
+	response, ok := server.HandleJSON(context.Background(), []byte(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"test-client","version":"1"}}}`))
 	if !ok {
 		t.Fatal("no initialize response")
 	}

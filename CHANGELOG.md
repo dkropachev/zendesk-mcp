@@ -2,6 +2,18 @@
 
 All notable changes use [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) structure. Releases follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- Bind stored credentials to their Zendesk tenant, reject non-Zendesk API hosts, and harden attachment-storage host validation.
+- Consume confirmed write operations before network execution to prevent ambiguous-failure retries from duplicating mutations.
+- Enforce Zendesk's 64 KiB comment-body limit using UTF-8 byte length.
+- Batch user resolution at Zendesk's 100-ID API limit.
+- Preserve safe attachment-upload cleanup after request cancellation without racing ambiguous ticket updates.
+- Validate JSON-RPC and negotiate supported MCP protocol versions.
+- Return actionable handler failures as MCP tool results with `isError: true`.
+
 ## [0.4.0] - 2026-09-10
 
 ### Added
