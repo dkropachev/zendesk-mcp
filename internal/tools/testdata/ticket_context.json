@@ -1,0 +1,40 @@
+{
+  "ticket": {
+    "id": 12345,
+    "subject": "Intermittent latency during application startup",
+    "status": "open",
+    "priority": "normal",
+    "requester_id": 1001,
+    "assignee_id": 2001,
+    "organization_id": 3001,
+    "group_id": 4001,
+    "created_at": "2026-01-01T00:00:00Z",
+    "updated_at": "2026-01-02T00:00:00Z",
+    "tags": ["product-core", "normal-priority"],
+    "custom_fields": [{"id": 5001, "value": "release_current"}]
+  },
+  "comments": [
+    {
+      "id": 6001,
+      "author_id": 1001,
+      "created_at": "2026-01-01T00:00:00Z",
+      "public": true,
+      "plain_body": "Sanitized customer reproduction summary.",
+      "attachments": [{"id": 7001, "file_name": "reproducer.tar.gz", "content_type": "application/gzip", "size": 1024, "malware_scan_result": "malware_not_found"}]
+    },
+    {
+      "id": 6002,
+      "author_id": 2001,
+      "created_at": "2026-01-02T00:00:00Z",
+      "public": false,
+      "plain_body": "Sanitized internal investigation note.",
+      "attachments": []
+    }
+  ],
+  "users": [
+    {"id": 1001, "name": "Example Requester", "role": "end-user"},
+    {"id": 2001, "name": "Example Agent", "role": "agent"}
+  ],
+  "organization": {"id": 3001, "name": "Example Customer"},
+  "ticket_fields": [{"id": 5001, "title": "Release", "type": "tagger", "custom_field_options": [{"id": 1, "name": "Current Release", "value": "release_current"}]}]
+}

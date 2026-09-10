@@ -1,0 +1,49 @@
+name: Bug report
+description: Report reproducible incorrect behavior without sensitive Zendesk data
+title: "bug: "
+labels: [bug, triage]
+body:
+  - type: markdown
+    attributes:
+      value: Do not include cookies, tokens, copied cURL commands, customer data, or signed attachment URLs.
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      placeholder: v0.2.0 or commit SHA
+    validations:
+      required: true
+  - type: dropdown
+    id: auth
+    attributes:
+      label: Authentication mode
+      options: [browser session, OAuth, API token]
+    validations:
+      required: true
+  - type: textarea
+    id: behavior
+    attributes:
+      label: Observed behavior
+      description: Redact tenant names, ticket content, IDs, and credentials.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Sanitized reproduction
+      description: Include commands or MCP arguments using example values only.
+    validations:
+      required: true
+  - type: checkboxes
+    id: safety
+    attributes:
+      label: Safety confirmation
+      options:
+        - label: I removed credentials, customer data, signed URLs, and private tenant details.
+          required: true
