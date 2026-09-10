@@ -1,0 +1,103 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+permissions: {}
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: build-and-attest
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: stable
+          cache: true
+      - name: Test
+        run: go test -race ./...
+      - name: Build release archives
+        shell: bash
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          version="${TAG#v}"
+          if ! [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "invalid release tag: $TAG" >&2
+            exit 1
+          fi
+          mkdir -p dist staging
+          build_archive() {
+            local goos="$1" goarch="$2" extension="$3" archive="$4"
+            local package="zendesk-mcp_${version}_${goos}_${goarch}"
+            mkdir -p "staging/$package"
+            CGO_ENABLED=0 GOOS="$goos" GOARCH="$goarch" \
+              go build -trimpath -ldflags "-s -w -X main.version=$version" \
+              -o "staging/$package/zendesk-mcp$extension" ./cmd/zendesk-mcp
+            cp README.md LICENSE "staging/$package/"
+            if [[ "$archive" == "zip" ]]; then
+              (cd staging && zip -q -r "../dist/$package.zip" "$package")
+            else
+              tar -C staging -czf "dist/$package.tar.gz" "$package"
+            fi
+            rm -rf "staging/$package"
+          }
+          build_archive linux amd64 "" tar
+          build_archive linux arm64 "" tar
+          build_archive darwin amd64 "" tar
+          build_archive darwin arm64 "" tar
+          build_archive windows amd64 .exe zip
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
+            go build -trimpath -ldflags "-s -w -X main.version=$version" \
+            -o dist/zendesk-mcp-version-check ./cmd/zendesk-mcp
+          test "$(dist/zendesk-mcp-version-check version)" = "$version"
+          rm dist/zendesk-mcp-version-check
+          (cd dist && sha256sum zendesk-mcp_* > checksums.txt)
+      - name: Attest release assets
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-path: dist/*
+      - name: Upload release assets
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-assets
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    name: publish
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      actions: read
+      contents: write
+    steps:
+      - name: Download release assets
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: release-assets
+          path: dist
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: gh release create "$TAG" dist/* --verify-tag --generate-notes --title "$TAG"

@@ -1,0 +1,11 @@
+#!/bin/sh
+set -eu
+
+root_dir=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+binary="$root_dir/bin/zendesk-mcp-bin"
+
+if [ ! -x "$binary" ] || find "$root_dir/cmd" "$root_dir/internal" -type f -newer "$binary" -print -quit 2>/dev/null | grep -q .; then
+  (cd "$root_dir" && go build -o "$binary" ./cmd/zendesk-mcp)
+fi
+
+exec "$binary" "$@"

@@ -1,0 +1,7 @@
+/zendesk-mcp
+/bin/zendesk-mcp-bin
+/dist/
+/staging/
+*.test
+coverage.out
+.env

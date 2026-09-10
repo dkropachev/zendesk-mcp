@@ -1,0 +1,29 @@
+name: Feature request
+description: Suggest a focused capability or workflow improvement
+title: "feat: "
+labels: [enhancement, triage]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: Describe user need without customer data.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed behavior
+      description: Include expected MCP inputs, outputs, and safety constraints.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+  - type: checkboxes
+    id: writes
+    attributes:
+      label: Zendesk mutation
+      options:
+        - label: This proposal creates or changes Zendesk data.
