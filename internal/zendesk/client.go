@@ -29,6 +29,8 @@ const (
 	configVersion           = 1
 )
 
+var ErrBaseURLRequired = errors.New("Zendesk base URL is required")
+
 type Config struct {
 	Version               int           `json:"version,omitempty"`
 	BaseURL               string        `json:"base_url"`
@@ -277,7 +279,7 @@ func normalizeConfig(cfg Config) (Config, error) {
 		return Config{}, fmt.Errorf("unsupported config version %d", cfg.Version)
 	}
 	if strings.TrimSpace(cfg.BaseURL) == "" {
-		return Config{}, errors.New("Zendesk base URL is required; set ZENDESK_BASE_URL or run zendesk-mcp login")
+		return Config{}, fmt.Errorf("%w; set ZENDESK_BASE_URL or run zendesk-mcp login", ErrBaseURLRequired)
 	}
 	cfg.BaseURL = strings.TrimRight(strings.TrimSpace(cfg.BaseURL), "/")
 	cfg.AuthMode = strings.ToLower(strings.TrimSpace(cfg.AuthMode))

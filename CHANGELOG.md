@@ -2,6 +2,14 @@
 
 All notable changes use [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) structure. Releases follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.0] - 2026-09-10
+
+### Added
+
+- MCP initialization instructions now include tenant-specific quick Copy-as-cURL login steps.
+- Auth-free `zendesk_login_help` tool exposes same steps on demand.
+- Setup-only MCP mode initializes without existing configuration and exposes login help before authentication.
+
 ## [0.3.0] - 2026-09-10
 
 ### Added
@@ -28,3 +36,4 @@ All notable changes use [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 
 [0.2.0]: https://github.com/dkropachev/zendesk-mcp/releases/tag/v0.2.0
 [0.3.0]: https://github.com/dkropachev/zendesk-mcp/releases/tag/v0.3.0
+[0.4.0]: https://github.com/dkropachev/zendesk-mcp/releases/tag/v0.4.0

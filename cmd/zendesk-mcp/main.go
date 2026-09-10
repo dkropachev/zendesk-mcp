@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/signal"
@@ -41,6 +42,12 @@ func run(args []string) error {
 	}
 	cfg, err := zendesk.ConfigFromEnv()
 	if err != nil {
+		if errors.Is(err, zendesk.ErrBaseURLRequired) {
+			server := toolregistry.NewSetupServer(version)
+			ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+			defer cancel()
+			return server.Serve(ctx, os.Stdin, os.Stdout)
+		}
 		return err
 	}
 	client, err := zendesk.New(cfg)

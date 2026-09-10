@@ -30,33 +30,33 @@ Choose matching archive:
 
 | Platform | Asset |
 | --- | --- |
-| Linux x86-64 | `zendesk-mcp_0.3.0_linux_amd64.tar.gz` |
-| Linux ARM64 | `zendesk-mcp_0.3.0_linux_arm64.tar.gz` |
-| macOS Intel | `zendesk-mcp_0.3.0_darwin_amd64.tar.gz` |
-| macOS Apple Silicon | `zendesk-mcp_0.3.0_darwin_arm64.tar.gz` |
-| Windows x86-64 | `zendesk-mcp_0.3.0_windows_amd64.zip` |
+| Linux x86-64 | `zendesk-mcp_0.4.0_linux_amd64.tar.gz` |
+| Linux ARM64 | `zendesk-mcp_0.4.0_linux_arm64.tar.gz` |
+| macOS Intel | `zendesk-mcp_0.4.0_darwin_amd64.tar.gz` |
+| macOS Apple Silicon | `zendesk-mcp_0.4.0_darwin_arm64.tar.gz` |
+| Windows x86-64 | `zendesk-mcp_0.4.0_windows_amd64.zip` |
 
 Linux x86-64 example using [GitHub CLI](https://cli.github.com/):
 
 ```sh
 release_dir=$(mktemp -d)
-gh release download v0.3.0 \
+gh release download v0.4.0 \
   --repo dkropachev/zendesk-mcp \
   --pattern checksums.txt \
-  --pattern zendesk-mcp_0.3.0_linux_amd64.tar.gz \
+  --pattern zendesk-mcp_0.4.0_linux_amd64.tar.gz \
   --dir "$release_dir"
 
 (cd "$release_dir" && sha256sum --check checksums.txt --ignore-missing)
-gh attestation verify "$release_dir/zendesk-mcp_0.3.0_linux_amd64.tar.gz" \
+gh attestation verify "$release_dir/zendesk-mcp_0.4.0_linux_amd64.tar.gz" \
   --repo dkropachev/zendesk-mcp
-tar -xzf "$release_dir/zendesk-mcp_0.3.0_linux_amd64.tar.gz" -C "$release_dir"
+tar -xzf "$release_dir/zendesk-mcp_0.4.0_linux_amd64.tar.gz" -C "$release_dir"
 install -Dm0755 \
-  "$release_dir/zendesk-mcp_0.3.0_linux_amd64/zendesk-mcp" \
+  "$release_dir/zendesk-mcp_0.4.0_linux_amd64/zendesk-mcp" \
   "$HOME/.local/bin/zendesk-mcp"
 zendesk-mcp version
 ```
 
-Expected version: `0.3.0`.
+Expected version: `0.4.0`.
 
 For macOS, use `shasum -a 256 -c checksums.txt` for checksum verification. For Windows, verify SHA-256 with `Get-FileHash`, extract the `.zip`, and place `zendesk-mcp.exe` on `PATH`.
 
@@ -155,6 +155,8 @@ codex mcp get zendesk
 
 Restart Codex after first registration so tools load. No daemon or `codex mcp login` needed for stdio server.
 
+On MCP initialization, Codex receives quick Copy-as-cURL login instructions containing configured tickets-page URL. `zendesk_login_help` returns same steps without calling Zendesk. If no configuration exists, MCP starts in setup-only mode with this one help tool; after running `zendesk-mcp login`, restart Codex to load full tool set. In Codex TUI, use `/mcp verbose` to inspect server instructions and connected tools.
+
 Check effective setup without exposing secrets:
 
 ```sh
@@ -178,6 +180,7 @@ Ticket bodies and files are untrusted. Never execute or automatically extract at
 
 | Tool | Purpose |
 | --- | --- |
+| `zendesk_login_help` | Show auth-free DevTools Copy-as-cURL login steps |
 | `zendesk_auth_check` | Identity, role, tenant, capabilities, and process metrics |
 | `zendesk_get_ticket` | Ticket, sideloads, agent URL, and rate-limit metadata |
 | `zendesk_list_ticket_comments` | Full or compact comments; stable cursor sorting and inline images |
