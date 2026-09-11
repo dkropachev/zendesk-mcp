@@ -25,7 +25,7 @@ func TestMCPListAndCallTicketComments(t *testing.T) {
 		_, _ = w.Write([]byte(`{"comments":[{"id":9}],"meta":{"has_more":false}}`))
 	}))
 	defer httpServer.Close()
-	client, err := zendesk.New(zendesk.Config{BaseURL: httpServer.URL, AuthMode: "oauth", OAuthToken: "secret", TLSSkipVerify: true})
+	client, err := zendesk.New(zendesk.Config{BaseURL: httpServer.URL, AuthMode: "oauth", OAuthToken: "secret", TLSSkipVerify: true, AllowNonZendeskHostForTesting: true})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -32,31 +33,34 @@ const (
 var ErrBaseURLRequired = errors.New("Zendesk base URL is required")
 
 type Config struct {
-	Version               int           `json:"version,omitempty"`
-	BaseURL               string        `json:"base_url"`
-	AuthMode              string        `json:"auth_mode"`
-	Cookie                string        `json:"cookie,omitempty"`
-	CookieFile            string        `json:"cookie_file,omitempty"`
-	HeadersFile           string        `json:"headers_file,omitempty"`
-	OAuthToken            string        `json:"oauth_token,omitempty"`
-	OAuthTokenFile        string        `json:"oauth_token_file,omitempty"`
-	Email                 string        `json:"email,omitempty"`
-	APIToken              string        `json:"api_token,omitempty"`
-	APITokenFile          string        `json:"api_token_file,omitempty"`
-	DownloadRoot          string        `json:"download_root,omitempty"`
-	UploadRoot            string        `json:"upload_root,omitempty"`
-	EnableWrite           bool          `json:"enable_write,omitempty"`
-	Timeout               time.Duration `json:"-"`
-	MaxResponseBytes      int64         `json:"max_response_bytes,omitempty"`
-	MaxDownloadBytes      int64         `json:"max_download_bytes,omitempty"`
-	MaxReadRetries        int           `json:"max_read_retries,omitempty"`
-	TLSSkipVerify         bool          `json:"tls_insecure_skip_verify,omitempty"`
-	IntegrationAllowWrite bool          `json:"-"`
+	Version                       int           `json:"version,omitempty"`
+	BaseURL                       string        `json:"base_url"`
+	CredentialHost                string        `json:"credential_host,omitempty"`
+	AuthMode                      string        `json:"auth_mode"`
+	Cookie                        string        `json:"cookie,omitempty"`
+	CookieFile                    string        `json:"cookie_file,omitempty"`
+	HeadersFile                   string        `json:"headers_file,omitempty"`
+	OAuthToken                    string        `json:"oauth_token,omitempty"`
+	OAuthTokenFile                string        `json:"oauth_token_file,omitempty"`
+	Email                         string        `json:"email,omitempty"`
+	APIToken                      string        `json:"api_token,omitempty"`
+	APITokenFile                  string        `json:"api_token_file,omitempty"`
+	DownloadRoot                  string        `json:"download_root,omitempty"`
+	UploadRoot                    string        `json:"upload_root,omitempty"`
+	EnableWrite                   bool          `json:"enable_write,omitempty"`
+	Timeout                       time.Duration `json:"-"`
+	MaxResponseBytes              int64         `json:"max_response_bytes,omitempty"`
+	MaxDownloadBytes              int64         `json:"max_download_bytes,omitempty"`
+	MaxReadRetries                int           `json:"max_read_retries,omitempty"`
+	TLSSkipVerify                 bool          `json:"tls_insecure_skip_verify,omitempty"`
+	IntegrationAllowWrite         bool          `json:"-"`
+	AllowNonZendeskHostForTesting bool          `json:"-"`
 }
 
 type fileConfig struct {
 	Version          int    `json:"version,omitempty"`
 	BaseURL          string `json:"base_url"`
+	CredentialHost   string `json:"credential_host,omitempty"`
 	AuthMode         string `json:"auth_mode"`
 	Cookie           string `json:"cookie,omitempty"`
 	CookieFile       string `json:"cookie_file,omitempty"`
@@ -215,6 +219,14 @@ func ConfigFromEnv() (Config, error) {
 	if err := boolEnv("ZENDESK_INTEGRATION_ALLOW_WRITE", &cfg.IntegrationAllowWrite); err != nil {
 		return Config{}, err
 	}
+	if inlineEnvironmentCredentialSelected(cfg) {
+		// An explicit inline credential replaces, rather than rebinds, any
+		// credential file from the stored configuration.
+		cfg.CredentialHost = ""
+	}
+	if strings.TrimSpace(cfg.BaseURL) != "" && strings.TrimSpace(cfg.CredentialHost) == "" && usesCredentialFile(cfg) {
+		return Config{}, errors.New("credential files require a persistent tenant binding; run zendesk-mcp login or configure them in config.json")
+	}
 	return normalizeConfig(cfg)
 }
 
@@ -233,6 +245,7 @@ func ConfigFromFile(path string) (Config, error) {
 	}
 	cfg.Version = file.Version
 	cfg.BaseURL = file.BaseURL
+	cfg.CredentialHost = file.CredentialHost
 	cfg.AuthMode = file.AuthMode
 	cfg.Cookie = file.Cookie
 	cfg.CookieFile = file.CookieFile
@@ -282,6 +295,33 @@ func normalizeConfig(cfg Config) (Config, error) {
 		return Config{}, fmt.Errorf("%w; set ZENDESK_BASE_URL or run zendesk-mcp login", ErrBaseURLRequired)
 	}
 	cfg.BaseURL = strings.TrimRight(strings.TrimSpace(cfg.BaseURL), "/")
+	baseURL, err := url.Parse(cfg.BaseURL)
+	if err != nil || baseURL.Scheme != "https" || baseURL.Host == "" || baseURL.User != nil {
+		return Config{}, fmt.Errorf("base URL must be absolute credential-free https URL: %q", cfg.BaseURL)
+	}
+	baseHost := baseURL.Hostname()
+	if !cfg.AllowNonZendeskHostForTesting {
+		baseHost, err = canonicalDNSHostname(baseHost)
+		if err != nil {
+			return Config{}, fmt.Errorf("invalid base URL host: %w", err)
+		}
+	} else {
+		baseHost = strings.ToLower(baseHost)
+	}
+	cfg.CredentialHost = strings.TrimSpace(cfg.CredentialHost)
+	if cfg.CredentialHost != "" && !cfg.AllowNonZendeskHostForTesting {
+		cfg.CredentialHost, err = canonicalDNSHostname(cfg.CredentialHost)
+		if err != nil {
+			return Config{}, fmt.Errorf("invalid credential host: %w", err)
+		}
+	} else {
+		cfg.CredentialHost = strings.ToLower(cfg.CredentialHost)
+	}
+	if cfg.CredentialHost == "" {
+		cfg.CredentialHost = baseHost
+	} else if cfg.CredentialHost != baseHost {
+		return Config{}, fmt.Errorf("credential host %q does not match base URL host %q", cfg.CredentialHost, baseHost)
+	}
 	cfg.AuthMode = strings.ToLower(strings.TrimSpace(cfg.AuthMode))
 	cfg.CookieFile = expandHome(strings.TrimSpace(cfg.CookieFile))
 	cfg.HeadersFile = expandHome(strings.TrimSpace(cfg.HeadersFile))
@@ -330,8 +370,18 @@ func New(cfg Config) (*Client, error) {
 		return nil, err
 	}
 	baseURL, err := url.Parse(cfg.BaseURL)
-	if err != nil || baseURL.Scheme != "https" || baseURL.Host == "" || baseURL.User != nil {
-		return nil, fmt.Errorf("base URL must be absolute credential-free https URL: %q", cfg.BaseURL)
+	if err != nil {
+		return nil, err
+	}
+	host := baseURL.Hostname()
+	if !cfg.AllowNonZendeskHostForTesting {
+		host, err = canonicalDNSHostname(host)
+		if err != nil {
+			return nil, fmt.Errorf("invalid base URL host: %w", err)
+		}
+		if !strings.HasSuffix(host, ".zendesk.com") || host == ".zendesk.com" {
+			return nil, fmt.Errorf("base URL host must be a zendesk.com tenant: %q", host)
+		}
 	}
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	if cfg.TLSSkipVerify {
@@ -352,6 +402,84 @@ func New(cfg Config) (*Client, error) {
 			CheckRedirect: noRedirect,
 		},
 	}, nil
+}
+
+func canonicalDNSHostname(host string) (string, error) {
+	host = strings.TrimSpace(host)
+	if host == "" {
+		return "", errors.New("DNS hostname is empty")
+	}
+	for i := 0; i < len(host); i++ {
+		if host[i] > 0x7f {
+			return "", fmt.Errorf("DNS hostname must contain only ASCII characters: %q", host)
+		}
+	}
+	host = strings.ToLower(host)
+	if strings.Contains(host, "%") {
+		return "", fmt.Errorf("IP zone identifiers are not allowed: %q", host)
+	}
+	if net.ParseIP(host) != nil {
+		return "", fmt.Errorf("IP literals are not allowed: %q", host)
+	}
+	if len(host) > 253 {
+		return "", fmt.Errorf("DNS hostname is too long: %q", host)
+	}
+	for _, label := range strings.Split(host, ".") {
+		if label == "" || len(label) > 63 {
+			return "", fmt.Errorf("invalid DNS label in hostname %q", host)
+		}
+		if label[0] == '-' || label[len(label)-1] == '-' {
+			return "", fmt.Errorf("invalid DNS label in hostname %q", host)
+		}
+		for i := 0; i < len(label); i++ {
+			character := label[i]
+			if (character < 'a' || character > 'z') && (character < '0' || character > '9') && character != '-' {
+				return "", fmt.Errorf("invalid DNS label in hostname %q", host)
+			}
+		}
+	}
+	return host, nil
+}
+
+func usesCredentialFile(cfg Config) bool {
+	switch selectedAuthMode(cfg) {
+	case "browser":
+		return strings.TrimSpace(cfg.Cookie) == "" && strings.TrimSpace(cfg.CookieFile) != ""
+	case "oauth":
+		return strings.TrimSpace(cfg.OAuthToken) == "" && strings.TrimSpace(cfg.OAuthTokenFile) != ""
+	case "api_token":
+		return strings.TrimSpace(cfg.APIToken) == "" && strings.TrimSpace(cfg.APITokenFile) != ""
+	default:
+		return false
+	}
+}
+
+func inlineEnvironmentCredentialSelected(cfg Config) bool {
+	switch selectedAuthMode(cfg) {
+	case "browser":
+		return strings.TrimSpace(os.Getenv("ZENDESK_COOKIE")) != ""
+	case "oauth":
+		return strings.TrimSpace(os.Getenv("ZENDESK_OAUTH_TOKEN")) != ""
+	case "api_token":
+		return strings.TrimSpace(os.Getenv("ZENDESK_API_TOKEN")) != ""
+	default:
+		return false
+	}
+}
+
+func selectedAuthMode(cfg Config) string {
+	authMode := strings.ToLower(strings.TrimSpace(cfg.AuthMode))
+	if authMode != "" {
+		return authMode
+	}
+	switch {
+	case strings.TrimSpace(cfg.OAuthToken) != "" || strings.TrimSpace(cfg.OAuthTokenFile) != "":
+		return "oauth"
+	case strings.TrimSpace(cfg.APIToken) != "" || strings.TrimSpace(cfg.APITokenFile) != "":
+		return "api_token"
+	default:
+		return "browser"
+	}
 }
 
 func (c *Client) Config() Config {
@@ -470,23 +598,23 @@ func (c *Client) doJSONOnce(ctx context.Context, method string, endpoint *url.UR
 	}
 	c.recordStatus(resp.StatusCode)
 	defer resp.Body.Close()
-	limitBytes = c.responseLimit(limitBytes)
-	responseBody, err := io.ReadAll(io.LimitReader(resp.Body, limitBytes+1))
-	if err != nil {
-		c.metrics.errors.Add(1)
-		return nil, err
-	}
-	c.metrics.responseBytes.Add(uint64(len(responseBody)))
-	if int64(len(responseBody)) > limitBytes {
-		c.metrics.errors.Add(1)
-		return nil, fmt.Errorf("RESPONSE_TOO_LARGE: response exceeded %d bytes; narrow query or reduce page_size", limitBytes)
-	}
 	result := &Response{
 		StatusCode: resp.StatusCode,
 		URL:        endpoint.Redacted(),
 		Header:     resp.Header.Clone(),
-		Body:       responseBody,
 		RateLimit:  parseRateLimit(resp.Header),
+	}
+	limitBytes = c.responseLimit(limitBytes)
+	responseBody, err := io.ReadAll(io.LimitReader(resp.Body, limitBytes+1))
+	result.Body = responseBody
+	if err != nil {
+		c.metrics.errors.Add(1)
+		return result, err
+	}
+	c.metrics.responseBytes.Add(uint64(len(responseBody)))
+	if int64(len(responseBody)) > limitBytes {
+		c.metrics.errors.Add(1)
+		return result, fmt.Errorf("RESPONSE_TOO_LARGE: response exceeded %d bytes; narrow query or reduce page_size", limitBytes)
 	}
 	if looksLikeExpiredAuth(result) {
 		c.metrics.errors.Add(1)

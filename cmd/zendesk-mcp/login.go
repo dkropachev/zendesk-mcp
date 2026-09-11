@@ -292,6 +292,11 @@ func writeLoginFiles(dir string, input loginInput) (loginPaths, error) {
 	}
 	config["version"] = 1
 	config["base_url"] = input.BaseURL
+	parsedBaseURL, err := url.Parse(input.BaseURL)
+	if err != nil || parsedBaseURL.Hostname() == "" {
+		return loginPaths{}, errors.New("invalid Zendesk base URL")
+	}
+	config["credential_host"] = strings.ToLower(parsedBaseURL.Hostname())
 	config["auth_mode"] = input.AuthMode
 	config["enable_write"] = false
 	switch input.AuthMode {

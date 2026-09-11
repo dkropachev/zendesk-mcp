@@ -28,7 +28,7 @@ func TestClientOAuthRequest(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client, err := New(Config{BaseURL: server.URL, AuthMode: "oauth", OAuthToken: "secret", TLSSkipVerify: true})
+	client, err := New(Config{BaseURL: server.URL, AuthMode: "oauth", OAuthToken: "secret", TLSSkipVerify: true, AllowNonZendeskHostForTesting: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -52,7 +52,7 @@ func TestClientAPITokenRequest(t *testing.T) {
 		_, _ = w.Write([]byte(`{"ok":true}`))
 	}))
 	defer server.Close()
-	client, err := New(Config{BaseURL: server.URL, AuthMode: "api_token", Email: "agent@example.com", APIToken: "secret", TLSSkipVerify: true})
+	client, err := New(Config{BaseURL: server.URL, AuthMode: "api_token", Email: "agent@example.com", APIToken: "secret", TLSSkipVerify: true, AllowNonZendeskHostForTesting: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -89,7 +89,7 @@ func TestClientBrowserReadsSecretFilesEachRequest(t *testing.T) {
 		_, _ = w.Write([]byte(`{"user":{"id":1}}`))
 	}))
 	defer server.Close()
-	client, err := New(Config{BaseURL: server.URL, AuthMode: "browser", CookieFile: cookiePath, HeadersFile: headersPath, TLSSkipVerify: true})
+	client, err := New(Config{BaseURL: server.URL, AuthMode: "browser", CookieFile: cookiePath, HeadersFile: headersPath, TLSSkipVerify: true, AllowNonZendeskHostForTesting: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -114,7 +114,7 @@ func TestClientDetectsExpiredBrowserAuth(t *testing.T) {
 		_, _ = w.Write([]byte("<html>Sign in to Zendesk</html>"))
 	}))
 	defer server.Close()
-	client, err := New(Config{BaseURL: server.URL, AuthMode: "browser", Cookie: "session=old", TLSSkipVerify: true})
+	client, err := New(Config{BaseURL: server.URL, AuthMode: "browser", Cookie: "session=old", TLSSkipVerify: true, AllowNonZendeskHostForTesting: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -132,7 +132,7 @@ func TestClientReportsOAuthExpiryAction(t *testing.T) {
 		_, _ = w.Write([]byte(`{"error":"unauthorized"}`))
 	}))
 	defer server.Close()
-	client, err := New(Config{BaseURL: server.URL, AuthMode: "oauth", OAuthToken: "expired", TLSSkipVerify: true})
+	client, err := New(Config{BaseURL: server.URL, AuthMode: "oauth", OAuthToken: "expired", TLSSkipVerify: true, AllowNonZendeskHostForTesting: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -148,14 +148,14 @@ func TestClientRejectsPathTraversalAndOversize(t *testing.T) {
 		_, _ = w.Write([]byte(`{"large":"abcdefghijklmnopqrstuvwxyz"}`))
 	}))
 	defer server.Close()
-	client, err := New(Config{BaseURL: server.URL, AuthMode: "oauth", OAuthToken: "secret", TLSSkipVerify: true, MaxResponseBytes: 16})
+	client, err := New(Config{BaseURL: server.URL, AuthMode: "oauth", OAuthToken: "secret", TLSSkipVerify: true, AllowNonZendeskHostForTesting: true, MaxResponseBytes: 16})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if _, err := client.Get(context.Background(), "/api/v2/../admin", nil, 16); err == nil {
 		t.Fatal("expected invalid path error")
 	}
-	if _, err := client.Get(context.Background(), "/api/v2/users/me.json", nil, 16); err == nil || !strings.Contains(err.Error(), "RESPONSE_TOO_LARGE") {
+	if resp, err := client.Get(context.Background(), "/api/v2/users/me.json", nil, 16); err == nil || !strings.Contains(err.Error(), "RESPONSE_TOO_LARGE") || resp == nil || resp.StatusCode != http.StatusOK {
 		t.Fatalf("error = %v", err)
 	}
 }
@@ -179,5 +179,112 @@ func TestConfigVersionMigrationAndFutureRejection(t *testing.T) {
 	}
 	if _, err := ConfigFromFile(future); err == nil {
 		t.Fatal("future config accepted")
+	}
+}
+
+func TestNewRejectsNonZendeskCredentialHost(t *testing.T) {
+	_, err := New(Config{BaseURL: "https://collector.example", AuthMode: "oauth", OAuthToken: "fake"})
+	if err == nil || !strings.Contains(err.Error(), "zendesk.com tenant") {
+		t.Fatalf("error=%v", err)
+	}
+}
+
+func TestNewRejectsInvalidDNSHostnameBeforeZendeskSuffixCheck(t *testing.T) {
+	for _, baseURL := range []string{
+		"https://[::ffff:127.0.0.1%25x.zendesk.com]",
+		"https://[::1]",
+		"https://127.0.0.1",
+		"https://tenant..zendesk.com",
+		"https://-tenant.zendesk.com",
+		"https://tenant_.zendesk.com",
+		"https://ténant.zendesk.com",
+		"https://vİctim.zendesk.com",
+	} {
+		t.Run(baseURL, func(t *testing.T) {
+			_, err := New(Config{BaseURL: baseURL, AuthMode: "oauth", OAuthToken: "fake", TLSSkipVerify: true})
+			if err == nil || !strings.Contains(err.Error(), "invalid base URL host") {
+				t.Fatalf("error=%v", err)
+			}
+		})
+	}
+}
+
+func TestEnvironmentCannotRebindStoredCredentialsToAnotherTenant(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "config.json")
+	config := `{"version":1,"base_url":"https://tenant-a.zendesk.com","auth_mode":"oauth","oauth_token_file":"/tmp/fake-token"}`
+	if err := os.WriteFile(configPath, []byte(config), 0600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("ZENDESK_CONFIG_FILE", configPath)
+	t.Setenv("ZENDESK_BASE_URL", "https://tenant-b.zendesk.com")
+	_, err := ConfigFromEnv()
+	if err == nil || !strings.Contains(err.Error(), "credential host") {
+		t.Fatalf("error=%v", err)
+	}
+}
+
+func TestEnvironmentCredentialFileRequiresPersistentHostBinding(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("ZENDESK_CONFIG_FILE", "")
+	t.Setenv("ZENDESK_BASE_URL", "https://tenant-a.zendesk.com")
+	t.Setenv("ZENDESK_AUTH_MODE", "oauth")
+	t.Setenv("ZENDESK_OAUTH_TOKEN_FILE", "/tmp/fake-token")
+
+	_, err := ConfigFromEnv()
+	if err == nil || !strings.Contains(err.Error(), "persistent tenant binding") {
+		t.Fatalf("error=%v", err)
+	}
+}
+
+func TestEnvironmentIgnoresInactiveCredentialFileForHostBinding(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("ZENDESK_CONFIG_FILE", "")
+	t.Setenv("ZENDESK_BASE_URL", "https://tenant-a.zendesk.com")
+	t.Setenv("ZENDESK_AUTH_MODE", "oauth")
+	t.Setenv("ZENDESK_OAUTH_TOKEN", "inline-token")
+	t.Setenv("ZENDESK_OAUTH_TOKEN_FILE", "/tmp/inactive-token")
+
+	if _, err := ConfigFromEnv(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestEnvironmentInlineCredentialCanReplaceStoredTenant(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "config.json")
+	config := `{"version":1,"base_url":"https://tenant-a.zendesk.com","credential_host":"tenant-a.zendesk.com","auth_mode":"oauth","oauth_token_file":"/tmp/tenant-a-token"}`
+	if err := os.WriteFile(configPath, []byte(config), 0600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("ZENDESK_CONFIG_FILE", configPath)
+	t.Setenv("ZENDESK_BASE_URL", "https://tenant-b.zendesk.com")
+	t.Setenv("ZENDESK_OAUTH_TOKEN", "tenant-b-inline-token")
+
+	cfg, err := ConfigFromEnv()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.CredentialHost != "tenant-b.zendesk.com" {
+		t.Fatalf("credential host=%q", cfg.CredentialHost)
+	}
+}
+
+func TestEnvironmentInlineCredentialCanReplaceCredentialFreeConfigTenant(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "config.json")
+	if err := os.WriteFile(configPath, []byte(`{"version":1,"base_url":"https://tenant-a.zendesk.com","auth_mode":"oauth"}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("ZENDESK_CONFIG_FILE", configPath)
+	t.Setenv("ZENDESK_BASE_URL", "https://tenant-b.zendesk.com")
+	t.Setenv("ZENDESK_OAUTH_TOKEN", "tenant-b-inline-token")
+
+	cfg, err := ConfigFromEnv()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.CredentialHost != "tenant-b.zendesk.com" {
+		t.Fatalf("credential host=%q", cfg.CredentialHost)
 	}
 }

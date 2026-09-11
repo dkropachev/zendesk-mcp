@@ -18,6 +18,9 @@ import (
 )
 
 const preparedTTL = 10 * time.Minute
+const maxCommentBodyBytes = 64 * 1024
+
+var errPreparedOperationUsed = errors.New("prepared operation already used")
 
 type operationPayload struct {
 	Kind          string                 `json:"kind"`
@@ -68,7 +71,7 @@ func (s *PreparedStore) Prepare(payload operationPayload, tenant string, userID 
 	return &copy, nil
 }
 
-func (s *PreparedStore) Checkout(id, digest, tenant string, userID int64) (*preparedOperation, error) {
+func (s *PreparedStore) Checkout(id, digest, tenant string, userID int64, kind string) (*preparedOperation, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.pruneLocked()
@@ -77,7 +80,7 @@ func (s *PreparedStore) Checkout(id, digest, tenant string, userID int64) (*prep
 		return nil, errors.New("prepared operation missing or expired")
 	}
 	if op.Used {
-		return nil, errors.New("prepared operation already used")
+		return nil, errPreparedOperationUsed
 	}
 	if op.Digest != digest {
 		return nil, errors.New("prepared operation digest mismatch")
@@ -85,6 +88,10 @@ func (s *PreparedStore) Checkout(id, digest, tenant string, userID int64) (*prep
 	if op.Tenant != tenant || op.UserID != userID {
 		return nil, errors.New("prepared operation identity or tenant mismatch")
 	}
+	if op.Payload.Kind != kind {
+		return nil, errors.New("prepared operation kind does not match commit tool")
+	}
+	op.Used = true
 	copy := *op
 	return &copy, nil
 }
@@ -99,7 +106,7 @@ func (s *PreparedStore) Complete(id string) {
 func (s *PreparedStore) pruneLocked() {
 	now := s.now()
 	for id, op := range s.items {
-		if op.Used || !op.Expires.After(now) {
+		if !op.Expires.After(now) {
 			delete(s.items, id)
 		}
 	}
@@ -392,24 +399,34 @@ func (r *Registry) commit(ctx context.Context, kind string, args confirmArgs) (*
 	if kind != "create_request" && kind != "request_comment" && user.Role != "agent" && user.Role != "admin" {
 		return nil, errors.New("agent or admin role required for Tickets API write")
 	}
-	op, err := r.writes.Checkout(args.OperationID, args.Digest, r.client.BaseURL(), user.ID)
+	op, err := r.writes.Checkout(args.OperationID, args.Digest, r.client.BaseURL(), user.ID, kind)
 	if err != nil {
+		if errors.Is(err, errPreparedOperationUsed) {
+			return nil, writeAttemptConsumedError(err)
+		}
 		return nil, err
-	}
-	if op.Payload.Kind != kind {
-		return nil, errors.New("prepared operation kind does not match commit tool")
 	}
 	resp, err := r.execute(ctx, op.Payload)
 	if err != nil {
-		return nil, err
+		log.Printf("zendesk_write kind=%s operation=%s digest=%s user=%d outcome=unknown", kind, op.ID, op.Digest, user.ID)
+		return nil, writeAttemptConsumedError(err)
+	}
+	if resp == nil {
+		log.Printf("zendesk_write kind=%s operation=%s digest=%s user=%d outcome=unknown", kind, op.ID, op.Digest, user.ID)
+		return nil, writeAttemptConsumedError(errors.New("write returned no response"))
 	}
 	r.writes.Complete(op.ID)
-	log.Printf("zendesk_write kind=%s operation=%s digest=%s user=%d status=%d", kind, op.ID, op.Digest, user.ID, resp.StatusCode)
 	result, err := rawResult(resp)
 	if err != nil {
-		return nil, err
+		log.Printf("zendesk_write kind=%s operation=%s digest=%s user=%d status=%d outcome=unusable_response", kind, op.ID, op.Digest, user.ID, resp.StatusCode)
+		return nil, writeAttemptConsumedError(fmt.Errorf("decode write response: %w", err))
 	}
+	log.Printf("zendesk_write kind=%s operation=%s digest=%s user=%d status=%d", kind, op.ID, op.Digest, user.ID, resp.StatusCode)
 	return result, nil
+}
+
+func writeAttemptConsumedError(err error) error {
+	return fmt.Errorf("WRITE_ATTEMPT_CONSUMED: do not retry this operation; reconcile Zendesk state before preparing another write: %w", err)
 }
 
 func (r *Registry) execute(ctx context.Context, p operationPayload) (*zendesk.Response, error) {
@@ -430,7 +447,9 @@ func (r *Registry) execute(ctx context.Context, p operationPayload) (*zendesk.Re
 		}
 		p.TicketUpdate.Comment.Uploads = tokens
 		resp, err := r.client.UpdateTicket(ctx, p.TicketID, *p.TicketUpdate)
-		if err != nil {
+		// Redirects, missing responses, unusable 2xx responses, and 5xx responses
+		// may all follow a committed update, so only clean up after a clear rejection.
+		if err != nil && resp != nil && resp.StatusCode >= 400 && resp.StatusCode < 500 {
 			r.cleanupUploads(ctx, tokens)
 		}
 		return resp, err
@@ -443,8 +462,12 @@ func (r *Registry) execute(ctx context.Context, p operationPayload) (*zendesk.Re
 	}
 }
 func (r *Registry) cleanupUploads(ctx context.Context, tokens []string) {
-	for _, token := range tokens {
-		_ = r.client.DeleteUpload(ctx, token)
+	cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+	defer cancel()
+	for index, token := range tokens {
+		if err := r.client.DeleteUpload(cleanupCtx, token); err != nil {
+			log.Printf("zendesk_upload_cleanup index=%d outcome=failed error_type=%T", index, err)
+		}
 	}
 }
 
@@ -517,8 +540,8 @@ func validatedTicketCreate(args ticketCreateArgs, followup int64) (zendesk.Ticke
 	if args.Public == nil {
 		return zendesk.TicketCreate{}, errors.New("public is required and must explicitly be true or false")
 	}
-	if len([]rune(body)) > 100000 {
-		return zendesk.TicketCreate{}, errors.New("body exceeds 100000 characters")
+	if err := validateBody(body); err != nil {
+		return zendesk.TicketCreate{}, err
 	}
 	if len([]rune(subject)) > 500 {
 		return zendesk.TicketCreate{}, errors.New("subject exceeds 500 characters")
@@ -584,8 +607,8 @@ func validateOptionalIDs(ids ...int64) error {
 	return nil
 }
 func validateBody(body string) error {
-	if len([]rune(body)) > 100000 {
-		return errors.New("body exceeds 100000 characters")
+	if len([]byte(body)) > maxCommentBodyBytes {
+		return fmt.Errorf("body exceeds Zendesk %d-byte comment limit", maxCommentBodyBytes)
 	}
 	return nil
 }
