@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestClientOAuthRequest(t *testing.T) {
@@ -157,6 +158,50 @@ func TestClientRejectsPathTraversalAndOversize(t *testing.T) {
 	}
 	if resp, err := client.Get(context.Background(), "/api/v2/users/me.json", nil, 16); err == nil || !strings.Contains(err.Error(), "RESPONSE_TOO_LARGE") || resp == nil || resp.StatusCode != http.StatusOK {
 		t.Fatalf("error = %v", err)
+	}
+}
+
+func TestDownloadDefaultsUnlimitedAndAcceptsLargeOptionalCap(t *testing.T) {
+	if got := defaultConfig().MaxDownloadBytes; got != 0 {
+		t.Fatalf("default max download bytes=%d", got)
+	}
+	server := httptest.NewTLSServer(http.NotFoundHandler())
+	defer server.Close()
+	client, err := New(Config{
+		BaseURL:                       server.URL,
+		AuthMode:                      "oauth",
+		OAuthToken:                    "secret",
+		Timeout:                       25 * time.Millisecond,
+		MaxDownloadBytes:              maxZendeskUploadBytes + 1,
+		TLSSkipVerify:                 true,
+		AllowNonZendeskHostForTesting: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if client.Config().MaxDownloadBytes != maxZendeskUploadBytes+1 {
+		t.Fatalf("max download bytes=%d", client.Config().MaxDownloadBytes)
+	}
+	if client.downloadClient.Timeout != 0 || client.storageClient.Timeout != 0 {
+		t.Fatal("download clients have whole-response timeout")
+	}
+	for name, roundTripper := range map[string]http.RoundTripper{
+		"tenant":  client.downloadClient.Transport,
+		"storage": client.storageClient.Transport,
+	} {
+		transport, ok := roundTripper.(*http.Transport)
+		if !ok {
+			t.Fatalf("%s transport type=%T", name, roundTripper)
+		}
+		if transport.ResponseHeaderTimeout != 25*time.Millisecond {
+			t.Fatalf("%s header timeout=%v", name, transport.ResponseHeaderTimeout)
+		}
+		if transport.TLSHandshakeTimeout != 25*time.Millisecond {
+			t.Fatalf("%s TLS handshake timeout=%v", name, transport.TLSHandshakeTimeout)
+		}
+		if transport.DialContext == nil {
+			t.Fatalf("%s transport has no bounded dialer", name)
+		}
 	}
 }
 

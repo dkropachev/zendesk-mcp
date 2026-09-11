@@ -2,6 +2,12 @@
 
 All notable changes use [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) structure. Releases follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.0] - 2026-09-11
+
+### Changed
+
+- Remove built-in 25 MiB default and 50 MiB hard ceilings from attachment downloads. Bodies stream to disk with constant memory and no whole-body timeout while retaining connection, response-header, and body-idle timeouts; optional positive per-call or configured byte limits remain available.
+
 ## [0.4.1] - 2026-09-10
 
 ### Fixed
@@ -50,3 +56,4 @@ All notable changes use [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 [0.3.0]: https://github.com/dkropachev/zendesk-mcp/releases/tag/v0.3.0
 [0.4.0]: https://github.com/dkropachev/zendesk-mcp/releases/tag/v0.4.0
 [0.4.1]: https://github.com/dkropachev/zendesk-mcp/releases/tag/v0.4.1
+[0.5.0]: https://github.com/dkropachev/zendesk-mcp/releases/tag/v0.5.0

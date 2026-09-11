@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -97,9 +98,7 @@ func (c *Client) DownloadAttachment(ctx context.Context, attachment Attachment, 
 	if strings.TrimSpace(c.cfg.DownloadRoot) == "" {
 		return nil, errors.New("attachment download disabled: configure ZENDESK_DOWNLOAD_ROOT")
 	}
-	if maxBytes <= 0 || maxBytes > c.cfg.MaxDownloadBytes {
-		maxBytes = c.cfg.MaxDownloadBytes
-	}
+	maxBytes = effectiveDownloadLimit(maxBytes, c.cfg.MaxDownloadBytes)
 	target, err := resolveDownloadTarget(c.cfg.DownloadRoot, destination)
 	if err != nil {
 		return nil, err
@@ -119,16 +118,18 @@ func (c *Client) DownloadAttachment(ctx context.Context, attachment Attachment, 
 	if err := c.applyAuth(firstReq); err != nil {
 		return nil, err
 	}
-	firstResp, err := c.httpClient.Do(firstReq)
+	firstResp, firstCancel, err := doDownloadRequest(ctx, c.downloadClient, firstReq, c.cfg.Timeout)
 	if err != nil {
 		c.metrics.errors.Add(1)
 		return nil, err
 	}
 	c.recordStatus(firstResp.StatusCode)
 	var contentResp *http.Response
+	var contentCancel context.CancelFunc
 	switch {
 	case firstResp.StatusCode >= 300 && firstResp.StatusCode < 400:
 		_ = firstResp.Body.Close()
+		firstCancel()
 		location := strings.TrimSpace(firstResp.Header.Get("Location"))
 		storageURL, err := source.Parse(location)
 		if err != nil {
@@ -145,7 +146,7 @@ func (c *Client) DownloadAttachment(ctx context.Context, attachment Attachment, 
 		}
 		storageReq.Header.Set("User-Agent", "zendesk-mcp/0.2")
 		c.metrics.requests.Add(1)
-		contentResp, err = c.storageClient.Do(storageReq)
+		contentResp, contentCancel, err = doDownloadRequest(ctx, c.storageClient, storageReq, c.cfg.Timeout)
 		if err != nil {
 			c.metrics.errors.Add(1)
 			return nil, err
@@ -153,24 +154,30 @@ func (c *Client) DownloadAttachment(ctx context.Context, attachment Attachment, 
 		c.recordStatus(contentResp.StatusCode)
 	case firstResp.StatusCode >= 200 && firstResp.StatusCode < 300:
 		contentResp = firstResp
+		contentCancel = firstCancel
 	default:
 		_ = firstResp.Body.Close()
+		firstCancel()
 		c.metrics.errors.Add(1)
 		if firstResp.StatusCode == http.StatusUnauthorized || firstResp.StatusCode == http.StatusForbidden {
 			return nil, AuthExpiredError{StatusCode: firstResp.StatusCode, AuthMode: c.cfg.AuthMode}
 		}
 		return nil, fmt.Errorf("attachment endpoint HTTP %d", firstResp.StatusCode)
 	}
-	defer contentResp.Body.Close()
+	body := &idleTimeoutReadCloser{body: contentResp.Body, timeout: c.cfg.Timeout}
+	defer func() {
+		_ = body.Close()
+		contentCancel()
+	}()
 	if contentResp.StatusCode < 200 || contentResp.StatusCode >= 300 {
 		c.metrics.errors.Add(1)
 		return nil, fmt.Errorf("attachment storage HTTP %d", contentResp.StatusCode)
 	}
-	if contentResp.ContentLength > maxBytes {
+	if maxBytes > 0 && contentResp.ContentLength > maxBytes {
 		c.metrics.errors.Add(1)
 		return nil, fmt.Errorf("attachment exceeds %d-byte download limit", maxBytes)
 	}
-	result, err := writeDownload(contentResp.Body, target, maxBytes)
+	result, err := writeDownload(body, target, maxBytes)
 	if err != nil {
 		c.metrics.errors.Add(1)
 		return nil, err
@@ -186,6 +193,81 @@ func (c *Client) DownloadAttachment(ctx context.Context, attachment Attachment, 
 	c.metrics.responseBytes.Add(uint64(result.Bytes))
 	c.metrics.totalLatencyNS.Add(uint64(time.Since(started)))
 	return result, nil
+}
+
+func doDownloadRequest(parent context.Context, client *http.Client, req *http.Request, timeout time.Duration) (*http.Response, context.CancelFunc, error) {
+	requestCtx, cancel := context.WithCancel(parent)
+	timedOut := make(chan struct{})
+	timer := time.AfterFunc(timeout, func() {
+		cancel()
+		close(timedOut)
+	})
+	resp, err := client.Do(req.Clone(requestCtx))
+	if !timer.Stop() {
+		<-timedOut
+		if resp != nil && resp.Body != nil {
+			_ = resp.Body.Close()
+		}
+		cancel()
+		cause := parent.Err()
+		if cause == nil {
+			cause = context.DeadlineExceeded
+		}
+		return nil, nil, fmt.Errorf("attachment response headers exceeded %s: %w", timeout, cause)
+	}
+	if err != nil {
+		if resp != nil && resp.Body != nil {
+			_ = resp.Body.Close()
+		}
+		cancel()
+		return nil, nil, err
+	}
+	return resp, cancel, nil
+}
+
+type idleTimeoutReadCloser struct {
+	body      io.ReadCloser
+	timeout   time.Duration
+	closeOnce sync.Once
+	closeErr  error
+}
+
+func (r *idleTimeoutReadCloser) Read(p []byte) (int, error) {
+	if r.timeout <= 0 {
+		return r.body.Read(p)
+	}
+	fired := make(chan struct{})
+	timer := time.AfterFunc(r.timeout, func() {
+		_ = r.Close()
+		close(fired)
+	})
+	n, err := r.body.Read(p)
+	if !timer.Stop() {
+		<-fired
+	}
+	select {
+	case <-fired:
+		return n, fmt.Errorf("attachment download stalled for %s without receiving data", r.timeout)
+	default:
+		return n, err
+	}
+}
+
+func (r *idleTimeoutReadCloser) Close() error {
+	r.closeOnce.Do(func() {
+		r.closeErr = r.body.Close()
+	})
+	return r.closeErr
+}
+
+func effectiveDownloadLimit(requested, configured int64) int64 {
+	if requested <= 0 {
+		return configured
+	}
+	if configured <= 0 || requested < configured {
+		return requested
+	}
+	return configured
 }
 
 func (c *Client) validateAttachmentSource(rawURL string) (*url.URL, error) {
@@ -258,7 +340,7 @@ func pathWithin(root, path string) bool {
 	return err == nil && relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator))
 }
 
-func writeDownload(source io.Reader, target string, maxBytes int64) (_ *DownloadResult, resultErr error) {
+func writeDownload(source io.Reader, target string, maxBytes int64) (*DownloadResult, error) {
 	temp, err := os.CreateTemp(filepath.Dir(target), ".zendesk-download-*")
 	if err != nil {
 		return nil, err
@@ -267,20 +349,30 @@ func writeDownload(source io.Reader, target string, maxBytes int64) (_ *Download
 	defer func() {
 		_ = temp.Close()
 		_ = os.Remove(tempPath)
-		if resultErr != nil {
-			_ = os.Remove(target)
-		}
 	}()
 	if err := temp.Chmod(0600); err != nil {
 		return nil, err
 	}
 	hash := sha256.New()
-	written, err := io.Copy(io.MultiWriter(temp, hash), io.LimitReader(source, maxBytes+1))
+	stream := source
+	var limited *io.LimitedReader
+	if maxBytes > 0 {
+		limited = &io.LimitedReader{R: source, N: maxBytes}
+		stream = limited
+	}
+	written, err := io.Copy(io.MultiWriter(temp, hash), stream)
 	if err != nil {
 		return nil, err
 	}
-	if written > maxBytes {
-		return nil, fmt.Errorf("attachment exceeded %d-byte download limit", maxBytes)
+	if limited != nil && limited.N == 0 {
+		var extra [1]byte
+		extraBytes, extraErr := io.ReadFull(source, extra[:])
+		if extraBytes > 0 {
+			return nil, fmt.Errorf("attachment exceeded %d-byte download limit", maxBytes)
+		}
+		if extraErr != nil && !errors.Is(extraErr, io.EOF) {
+			return nil, extraErr
+		}
 	}
 	if err := temp.Sync(); err != nil {
 		return nil, err
