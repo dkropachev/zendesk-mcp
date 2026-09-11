@@ -24,7 +24,6 @@ import (
 const (
 	defaultTimeout          = 60 * time.Second
 	defaultMaxResponseBytes = int64(8 * 1024 * 1024)
-	defaultMaxDownloadBytes = int64(25 * 1024 * 1024)
 	maxZendeskUploadBytes   = int64(50 * 1024 * 1024)
 	defaultUserAgent        = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/153.0.0.0 Safari/537.36"
 	configVersion           = 1
@@ -81,14 +80,15 @@ type fileConfig struct {
 }
 
 type Client struct {
-	cfg           Config
-	baseURL       *url.URL
-	httpClient    *http.Client
-	storageClient *http.Client
-	metrics       clientMetrics
-	fieldCacheMu  sync.Mutex
-	fieldCache    []TicketField
-	fieldCacheAt  time.Time
+	cfg            Config
+	baseURL        *url.URL
+	httpClient     *http.Client
+	downloadClient *http.Client
+	storageClient  *http.Client
+	metrics        clientMetrics
+	fieldCacheMu   sync.Mutex
+	fieldCache     []TicketField
+	fieldCacheAt   time.Time
 }
 
 type clientMetrics struct {
@@ -279,7 +279,6 @@ func defaultConfig() Config {
 		BaseURL:          "",
 		Timeout:          defaultTimeout,
 		MaxResponseBytes: defaultMaxResponseBytes,
-		MaxDownloadBytes: defaultMaxDownloadBytes,
 		MaxReadRetries:   1,
 	}
 }
@@ -335,11 +334,8 @@ func normalizeConfig(cfg Config) (Config, error) {
 	if cfg.MaxResponseBytes <= 0 {
 		cfg.MaxResponseBytes = defaultMaxResponseBytes
 	}
-	if cfg.MaxDownloadBytes <= 0 {
-		cfg.MaxDownloadBytes = defaultMaxDownloadBytes
-	}
-	if cfg.MaxDownloadBytes > maxZendeskUploadBytes {
-		return Config{}, fmt.Errorf("max_download_bytes cannot exceed %d", maxZendeskUploadBytes)
+	if cfg.MaxDownloadBytes < 0 {
+		return Config{}, errors.New("max_download_bytes must be zero or positive")
 	}
 	if cfg.MaxReadRetries < 0 || cfg.MaxReadRetries > 3 {
 		return Config{}, errors.New("max_read_retries must be between 0 and 3")
@@ -388,6 +384,8 @@ func New(cfg Config) (*Client, error) {
 		transport.TLSClientConfig = &tls.Config{InsecureSkipVerify: true} // #nosec G402 -- explicit local test/debug option
 	}
 	noRedirect := func(req *http.Request, via []*http.Request) error { return http.ErrUseLastResponse }
+	downloadTransport := newDownloadTransport(transport, cfg.Timeout)
+	storageTransport := newDownloadTransport(transport, cfg.Timeout)
 	return &Client{
 		cfg:     cfg,
 		baseURL: baseURL,
@@ -396,12 +394,24 @@ func New(cfg Config) (*Client, error) {
 			Transport:     transport,
 			CheckRedirect: noRedirect,
 		},
+		downloadClient: &http.Client{
+			Transport:     downloadTransport,
+			CheckRedirect: noRedirect,
+		},
 		storageClient: &http.Client{
-			Timeout:       cfg.Timeout,
-			Transport:     transport.Clone(),
+			Transport:     storageTransport,
 			CheckRedirect: noRedirect,
 		},
 	}, nil
+}
+
+func newDownloadTransport(base *http.Transport, timeout time.Duration) *http.Transport {
+	transport := base.Clone()
+	dialer := &net.Dialer{Timeout: timeout, KeepAlive: 30 * time.Second}
+	transport.DialContext = dialer.DialContext
+	transport.TLSHandshakeTimeout = timeout
+	transport.ResponseHeaderTimeout = timeout
+	return transport
 }
 
 func canonicalDNSHostname(host string) (string, error) {

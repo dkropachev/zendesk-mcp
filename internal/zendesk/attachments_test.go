@@ -3,7 +3,9 @@ package zendesk
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -11,7 +13,9 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 )
 
 type failingReader struct{ sent bool }
@@ -23,6 +27,39 @@ func (r *failingReader) Read(p []byte) (int, error) {
 		return len("partial"), nil
 	}
 	return 0, io.ErrUnexpectedEOF
+}
+
+type generatedReader struct {
+	remaining  int64
+	maxRequest int
+}
+
+type countingReadCloser struct {
+	io.ReadCloser
+	closes atomic.Int32
+}
+
+func (r *countingReadCloser) Close() error {
+	r.closes.Add(1)
+	return r.ReadCloser.Close()
+}
+
+func (r *generatedReader) Read(p []byte) (int, error) {
+	if r.remaining == 0 {
+		return 0, io.EOF
+	}
+	if len(p) > r.maxRequest {
+		r.maxRequest = len(p)
+	}
+	n := len(p)
+	if int64(n) > r.remaining {
+		n = int(r.remaining)
+	}
+	for index := range p[:n] {
+		p[index] = 'x'
+	}
+	r.remaining -= int64(n)
+	return n, nil
 }
 
 type roundTripFunc func(*http.Request) (*http.Response, error)
@@ -183,6 +220,169 @@ func TestWriteDownloadInterruptedRemovesPartialFile(t *testing.T) {
 	}
 	if len(entries) != 0 {
 		t.Fatalf("temporary files remain: %v", entries)
+	}
+}
+
+func TestWriteDownloadDoesNotRemoveExistingDestination(t *testing.T) {
+	root := t.TempDir()
+	target := filepath.Join(root, "raced")
+	if err := os.WriteFile(target, []byte("keep"), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := writeDownload(strings.NewReader("replacement"), target, 0); err == nil || !strings.Contains(err.Error(), "already exists") {
+		t.Fatalf("error=%v", err)
+	}
+	data, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "keep" {
+		t.Fatalf("destination=%q", data)
+	}
+}
+
+func TestWriteDownloadOptionalLimitChecksStreamedBytes(t *testing.T) {
+	root := t.TempDir()
+	exactTarget := filepath.Join(root, "exact")
+	result, err := writeDownload(strings.NewReader("12345"), exactTarget, 5)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Bytes != 5 {
+		t.Fatalf("bytes=%d", result.Bytes)
+	}
+
+	oversizeTarget := filepath.Join(root, "oversize")
+	if _, err := writeDownload(strings.NewReader("123456"), oversizeTarget, 5); err == nil || !strings.Contains(err.Error(), "exceeded") {
+		t.Fatalf("error=%v", err)
+	}
+	if _, err := os.Stat(oversizeTarget); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("oversize target remains: %v", err)
+	}
+
+	truncatedTarget := filepath.Join(root, "truncated")
+	if _, err := writeDownload(&failingReader{}, truncatedTarget, int64(len("partial"))); !errors.Is(err, io.ErrUnexpectedEOF) {
+		t.Fatalf("truncated stream error=%v", err)
+	}
+	if _, err := os.Stat(truncatedTarget); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("truncated target remains: %v", err)
+	}
+}
+
+func TestWriteDownloadStreamsWithoutBuiltInLimit(t *testing.T) {
+	root := t.TempDir()
+	target := filepath.Join(root, "large")
+	size := maxZendeskUploadBytes + 1
+	source := &generatedReader{remaining: size}
+
+	result, err := writeDownload(source, target, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Bytes != size {
+		t.Fatalf("bytes=%d want=%d", result.Bytes, size)
+	}
+	if len(result.SHA256) != sha256.Size*2 {
+		t.Fatalf("sha256=%q", result.SHA256)
+	}
+	if source.maxRequest > 1024*1024 {
+		t.Fatalf("largest source read=%d; stream buffered too much", source.maxRequest)
+	}
+	info, err := os.Stat(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Size() != size || info.Mode().Perm() != 0600 {
+		t.Fatalf("size=%d mode=%v", info.Size(), info.Mode().Perm())
+	}
+}
+
+func TestEffectiveDownloadLimit(t *testing.T) {
+	tests := []struct {
+		name       string
+		requested  int64
+		configured int64
+		want       int64
+	}{
+		{name: "unlimited", want: 0},
+		{name: "request limit", requested: 20, want: 20},
+		{name: "server limit", configured: 30, want: 30},
+		{name: "request lower", requested: 20, configured: 30, want: 20},
+		{name: "server lower", requested: 40, configured: 30, want: 30},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := effectiveDownloadLimit(test.requested, test.configured); got != test.want {
+				t.Fatalf("limit=%d want=%d", got, test.want)
+			}
+		})
+	}
+}
+
+func TestIdleTimeoutReadCloserStopsStalledStream(t *testing.T) {
+	reader, writer := io.Pipe()
+	defer writer.Close()
+	body := &countingReadCloser{ReadCloser: reader}
+	stream := &idleTimeoutReadCloser{body: body, timeout: 10 * time.Millisecond}
+
+	_, err := stream.Read(make([]byte, 1))
+	if err == nil || !strings.Contains(err.Error(), "stalled") {
+		t.Fatalf("error=%v", err)
+	}
+	if err := stream.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if got := body.closes.Load(); got != 1 {
+		t.Fatalf("body closes=%d", got)
+	}
+}
+
+func TestDownloadRequestBoundsPreHeaderPhase(t *testing.T) {
+	client := &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		<-req.Context().Done()
+		return nil, req.Context().Err()
+	})}
+	req, err := http.NewRequest(http.MethodGet, "https://example.com/attachment", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	started := time.Now()
+	resp, cancel, err := doDownloadRequest(context.Background(), client, req, 10*time.Millisecond)
+	if resp != nil || cancel != nil || err == nil || !strings.Contains(err.Error(), "response headers exceeded") {
+		t.Fatalf("response=%v cancel=%v error=%v", resp, cancel != nil, err)
+	}
+	if elapsed := time.Since(started); elapsed > time.Second {
+		t.Fatalf("pre-header timeout took %v", elapsed)
+	}
+}
+
+func TestDownloadRequestStopsHeaderTimerForBodyStreaming(t *testing.T) {
+	var requestContext context.Context
+	client := &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		requestContext = req.Context()
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader("body")),
+			Request:    req,
+		}, nil
+	})}
+	req, err := http.NewRequest(http.MethodGet, "https://example.com/attachment", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, cancel, err := doDownloadRequest(context.Background(), client, req, 10*time.Millisecond)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	defer cancel()
+	time.Sleep(30 * time.Millisecond)
+	select {
+	case <-requestContext.Done():
+		t.Fatalf("body context canceled after headers: %v", requestContext.Err())
+	default:
 	}
 }
 

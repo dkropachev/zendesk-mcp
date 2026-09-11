@@ -134,8 +134,8 @@ Do not expose a generic arbitrary-path or arbitrary-JSON request tool. It would 
 - Build second request from scratch with no `Cookie`, `Authorization`, `Referer`, or browser headers.
 - Require configured `ZENDESK_DOWNLOAD_ROOT`.
 - Resolve and validate destination under root; reject traversal, symlink escape, overwrite, device files, and absolute out-of-root paths.
-- Stream to a mode-`0600` temporary file, enforce configured byte limit, hash while writing, then atomically rename.
-- Default maximum 25 MiB; configurable maximum cannot exceed Zendesk's current 50 MiB attachment limit without an explicit future decision.
+- Stream to a mode-`0600` temporary file with constant memory, hash while writing, then atomically rename.
+- Do not impose a default or hard byte ceiling; allow optional positive per-call or configured limits. A zero/unset configured limit means no server cap; an omitted per-call limit inherits server configuration.
 
 ### Write safety
 
@@ -324,7 +324,7 @@ Use `httptest` servers for every verb and response class:
 
 - Existing eight read tools remain backward compatible.
 - Agent can investigate a ticket without manually joining numeric IDs.
-- Attachment download is bounded, workspace-confined, malware-aware, and credential-safe.
+- Attachment download is streamed, workspace-confined, malware-aware, and credential-safe.
 - Agent and end-user APIs are separated by authenticated role.
 - Ticket creation and updates are disabled by default and use two-step confirmation when enabled.
 - Writes use collision protection and return audit evidence.

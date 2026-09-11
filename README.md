@@ -30,33 +30,33 @@ Choose matching archive:
 
 | Platform | Asset |
 | --- | --- |
-| Linux x86-64 | `zendesk-mcp_0.4.1_linux_amd64.tar.gz` |
-| Linux ARM64 | `zendesk-mcp_0.4.1_linux_arm64.tar.gz` |
-| macOS Intel | `zendesk-mcp_0.4.1_darwin_amd64.tar.gz` |
-| macOS Apple Silicon | `zendesk-mcp_0.4.1_darwin_arm64.tar.gz` |
-| Windows x86-64 | `zendesk-mcp_0.4.1_windows_amd64.zip` |
+| Linux x86-64 | `zendesk-mcp_0.5.0_linux_amd64.tar.gz` |
+| Linux ARM64 | `zendesk-mcp_0.5.0_linux_arm64.tar.gz` |
+| macOS Intel | `zendesk-mcp_0.5.0_darwin_amd64.tar.gz` |
+| macOS Apple Silicon | `zendesk-mcp_0.5.0_darwin_arm64.tar.gz` |
+| Windows x86-64 | `zendesk-mcp_0.5.0_windows_amd64.zip` |
 
 Linux x86-64 example using [GitHub CLI](https://cli.github.com/):
 
 ```sh
 release_dir=$(mktemp -d)
-gh release download v0.4.1 \
+gh release download v0.5.0 \
   --repo dkropachev/zendesk-mcp \
   --pattern checksums.txt \
-  --pattern zendesk-mcp_0.4.1_linux_amd64.tar.gz \
+  --pattern zendesk-mcp_0.5.0_linux_amd64.tar.gz \
   --dir "$release_dir"
 
 (cd "$release_dir" && sha256sum --check checksums.txt --ignore-missing)
-gh attestation verify "$release_dir/zendesk-mcp_0.4.1_linux_amd64.tar.gz" \
+gh attestation verify "$release_dir/zendesk-mcp_0.5.0_linux_amd64.tar.gz" \
   --repo dkropachev/zendesk-mcp
-tar -xzf "$release_dir/zendesk-mcp_0.4.1_linux_amd64.tar.gz" -C "$release_dir"
+tar -xzf "$release_dir/zendesk-mcp_0.5.0_linux_amd64.tar.gz" -C "$release_dir"
 install -Dm0755 \
-  "$release_dir/zendesk-mcp_0.4.1_linux_amd64/zendesk-mcp" \
+  "$release_dir/zendesk-mcp_0.5.0_linux_amd64/zendesk-mcp" \
   "$HOME/.local/bin/zendesk-mcp"
 zendesk-mcp version
 ```
 
-Expected version: `0.4.1`.
+Expected version: `0.5.0`.
 
 For macOS, use `shasum -a 256 -c checksums.txt` for checksum verification. For Windows, verify SHA-256 with `Get-FileHash`, extract the `.zip`, and place `zendesk-mcp.exe` on `PATH`.
 
@@ -217,12 +217,15 @@ Add these properties to existing authenticated config:
 
 ```json
 {
-  "download_root": "/path/to/zendesk-downloads",
-  "max_download_bytes": 26214400
+  "download_root": "/path/to/zendesk-downloads"
 }
 ```
 
-Tool accepts ticket/comment/attachment IDs and relative destination, not arbitrary URL. It proves membership, requires `malware_not_found`, rejects overwrite/traversal/symlink escape, streams into mode-`0600` file, and returns SHA-256. Authenticated tenant request may redirect once to `*.zdusercontent.com`; second request is built without cookie, authorization, referer, or browser headers. Default cap 25 MiB; hard cap 50 MiB.
+Tool accepts ticket/comment/attachment IDs and relative destination, not arbitrary URL. It proves membership, requires `malware_not_found`, rejects overwrite/traversal/symlink escape, streams directly into a mode-`0600` file with constant memory, and returns SHA-256. Authenticated tenant request may redirect once to `*.zdusercontent.com`; second request is built without cookie, authorization, referer, or browser headers.
+
+Downloads have no built-in byte ceiling or whole-body timeout. `ZENDESK_TIMEOUT` bounds connection phases, response-header waits, and any interval without body data; active body streams may run for any total duration. Available disk space also bounds streaming. To opt into a byte guard, pass `max_bytes` for one tool call or configure `max_download_bytes`/`ZENDESK_MAX_DOWNLOAD_BYTES` for all downloads. When both are positive, lower limit wins. A zero or unset server setting means no server cap; omitted `max_bytes` inherits that server setting.
+
+Upgrade note: releases through v0.4.1 recommended a positive `max_download_bytes` value. That value remains an explicit safety cap. Remove it or set it to `0`, and unset or zero `ZENDESK_MAX_DOWNLOAD_BYTES`, to use unlimited streaming.
 
 ## Guarded writes
 
@@ -308,7 +311,7 @@ Important environment variables:
 | `ZENDESK_ENABLE_WRITE` | false |
 | `ZENDESK_TIMEOUT` | 60s |
 | `ZENDESK_MAX_RESPONSE_BYTES` | 8 MiB |
-| `ZENDESK_MAX_DOWNLOAD_BYTES` | 25 MiB |
+| `ZENDESK_MAX_DOWNLOAD_BYTES` | unlimited |
 | `ZENDESK_MAX_READ_RETRIES` | 1; maximum 3 |
 
 ## API references

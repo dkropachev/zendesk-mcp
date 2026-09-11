@@ -28,7 +28,7 @@ func (r *Registry) registerAttachmentTools(server *mcp.Server) {
 		attachment.MappedContentURL = ""
 		return jsonResult(map[string]any{"attachment": attachment})
 	}})
-	downloadProps := map[string]any{"ticket_id": integer("Ticket id", 1), "comment_id": integer("Comment id", 1), "attachment_id": integer("Attachment id", 1), "destination": stringProp("Relative path below configured download root; parent directory must exist"), "max_bytes": integer("Maximum bytes, capped by server config", 1)}
+	downloadProps := map[string]any{"ticket_id": integer("Ticket id", 1), "comment_id": integer("Comment id", 1), "attachment_id": integer("Attachment id", 1), "destination": stringProp("Relative path below configured download root; parent directory must exist"), "max_bytes": integer("Optional byte limit for this download; omit for unlimited unless server config sets a limit", 1)}
 	server.RegisterTool(mcp.Tool{Name: "zendesk_download_attachment", Description: "Download malware-cleared attachment into configured root. Never executes or extracts it; returns local path, size, MIME type, and SHA-256.", InputSchema: objectSchema(downloadProps, "ticket_id", "comment_id", "attachment_id", "destination"), Annotations: map[string]any{"readOnlyHint": false, "destructiveHint": false, "idempotentHint": false, "openWorldHint": true}, Handler: func(ctx context.Context, raw json.RawMessage) (*mcp.CallToolResult, error) {
 		var args struct {
 			TicketID     int64  `json:"ticket_id"`
